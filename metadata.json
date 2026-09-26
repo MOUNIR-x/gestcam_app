@@ -1,0 +1,6 @@
+{
+  "name": "GestCam - Gestion PME Cameroun",
+  "description": "Plateforme SaaS ultra-moderne de gestion commerciale, stocks, facturation OHADA et trésorerie pour les PME au Cameroun.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
