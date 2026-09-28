@@ -1,7 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../data/store';
+import authMiddleware from '../middleware/auth.js';
 
 const router = Router();
+
+// Protect tax endpoints
+router.use(authMiddleware);
 
 // GET /api/tax/declaration-mensuelle
 // Generates Cameroon DGI monthly tax pre-declaration summary according to Loi de Finances 2026
@@ -30,8 +34,8 @@ router.get('/declaration-mensuelle', (req: Request, res: Response) => {
   const totalAPayerRecette = tvaNetteADeclarer + totalAirsRetenu + droitTimbreTotal;
 
   res.json({
-    periode: currentMonth,
-    dateEcheance: `${currentMonth}-15`,
+    periode,
+    dateEcheance: `${periode}-15`,
     company: {
       name: db.company.name,
       niu: db.company.niu,

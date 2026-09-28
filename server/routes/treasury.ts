@@ -1,9 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../data/store';
+import authMiddleware from '../middleware/auth.js';
 import { TreasuryTransaction } from '../../src/types/index';
 import { pgService } from '../services/pgService.js';
 
 const router = Router();
+
+// Protect treasury endpoints
+router.use(authMiddleware);
 
 // GET /api/treasury/overview
 router.get('/overview', async (req: Request, res: Response) => {

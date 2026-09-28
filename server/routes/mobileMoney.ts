@@ -1,9 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { db, MobileMoneyPayment } from '../data/store';
 import { pgService } from '../services/pgService.js';
+import authMiddleware from '../middleware/auth.js';
 
 const router = Router();
 const WEBHOOK_TOKEN = process.env.MOBILE_WEBHOOK_TOKEN || '';
+
+// Protect collect/payments endpoints; webhook is exported separately and should be mounted without auth.
+router.use(authMiddleware);
 
 // GET /api/mobile-money/payments
 router.get('/payments', (req: Request, res: Response) => {
@@ -46,7 +50,7 @@ router.post('/collect', (req: Request, res: Response) => {
     invoiceId: invoiceId || '',
     status: 'PENDING',
     createdAt: new Date().toISOString(),
-    confirmedAt: null
+    confirmedAt: undefined
   };
 
   db.mobileMoneyPayments.unshift(payment);
@@ -123,7 +127,5 @@ export const webhookHandler = (req: Request, res: Response) => {
     paymentStatus: payment.status
   });
 };
-
-export default router;
 
 export default router;

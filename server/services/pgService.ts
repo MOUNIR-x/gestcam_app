@@ -8,6 +8,12 @@ const toNumber = (value: unknown, fallback = 0) => {
   return Number.isFinite(numeric) ? numeric : fallback;
 };
 
+// Local in-memory fallback lists used only when SQL operations are not available for specific features.
+const localFallback: any = {
+  fraudAlerts: [],
+  mobileMoneyPayments: []
+};
+
 export const pgService = {
   async getUser() {
     try {
@@ -22,11 +28,11 @@ export const pgService = {
   async upsertUser(data: any) {
     const payload = {
       uid: String(data?.uid || data?.id || `usr_${Date.now()}`),
-      email: String(data?.email || memoryStore.user.email),
-      name: data?.name || memoryStore.user.name,
-      role: data?.role || memoryStore.user.role,
-      companyName: data?.companyName || memoryStore.user.companyName,
-      city: data?.city || memoryStore.user.city,
+      email: String(data?.email || ''),
+      name: data?.name || null,
+      role: data?.role || 'Gérant PME',
+      companyName: data?.companyName || null,
+      city: data?.city || null,
     };
 
     try {
@@ -53,6 +59,45 @@ export const pgService = {
     }
   },
 
+  async findUserByEmail(email: string) {
+    try {
+      const rows = await db.select().from(schema.users).where(eq(schema.users.email, String(email))).limit(1);
+      return rows.length > 0 ? rows[0] : null;
+    } catch (e) {
+      console.error('[Postgres] findUserByEmail error:', (e as any)?.message);
+      throw e;
+    }
+  },
+
+  async getUserById(id: number) {
+    try {
+      const rows = await db.select().from(schema.users).where(eq(schema.users.id, Number(id))).limit(1);
+      return rows.length > 0 ? rows[0] : null;
+    } catch (e) {
+      console.error('[Postgres] getUserById error:', (e as any)?.message);
+      throw e;
+    }
+  },
+
+  async createUser(data: any) {
+    try {
+      const payload = {
+        uid: String(data?.uid || `usr_${Date.now()}`),
+        email: String(data?.email || ''),
+        name: data?.name || null,
+        role: data?.role || 'Gérant PME',
+        companyName: data?.companyName || null,
+        city: data?.city || null,
+      };
+      const [inserted] = await db.insert(schema.users).values(payload).returning();
+      if (inserted) return inserted;
+      return null;
+    } catch (e) {
+      console.error('[Postgres] createUser error:', (e as any)?.message);
+      throw e;
+    }
+  },
+
   async getCompany() {
     try {
       const rows = await db.select().from(schema.companies).limit(1);
@@ -65,22 +110,22 @@ export const pgService = {
 
   async upsertCompany(data: any) {
     const payload = {
-      name: data?.name || memoryStore.company.name,
-      commercialName: data?.commercialName || data?.name || memoryStore.company.commercialName,
-      niu: data?.niu || memoryStore.company.niu,
-      rccm: data?.rccm || memoryStore.company.rccm,
-      cdi: data?.cdi || memoryStore.company.cdi,
-      regime: data?.regime || memoryStore.company.regime,
-      address: data?.address || memoryStore.company.address,
-      city: data?.city || memoryStore.company.city,
-      phone: data?.phone || memoryStore.company.phone,
-      email: data?.email || memoryStore.company.email,
-      website: data?.website || memoryStore.company.website || null,
-      tvaRate: toNumber(data?.tvaRate ?? memoryStore.company.tvaRate, 0.1925),
-      acompteRate: toNumber(data?.acompteRate ?? memoryStore.company.acompteRate, 0.022),
-      enableTva: Boolean(data?.enableTva ?? memoryStore.company.enableTva),
-      enableAcompte: Boolean(data?.enableAcompte ?? memoryStore.company.enableAcompte),
-      stockLowAlertThreshold: toNumber(data?.stockLowAlertThreshold ?? memoryStore.company.stockLowAlertThreshold, 10),
+      name: data?.name || 'Nouvelle Entreprise',
+      commercialName: data?.commercialName || data?.name || 'Nouvelle Entreprise',
+      niu: data?.niu || null,
+      rccm: data?.rccm || null,
+      cdi: data?.cdi || null,
+      regime: data?.regime || 'REEL',
+      address: data?.address || null,
+      city: data?.city || 'Douala',
+      phone: data?.phone || null,
+      email: data?.email || null,
+      website: data?.website || null,
+      tvaRate: toNumber(data?.tvaRate ?? 0.1925, 0.1925),
+      acompteRate: toNumber(data?.acompteRate ?? 0.022, 0.022),
+      enableTva: Boolean(data?.enableTva ?? true),
+      enableAcompte: Boolean(data?.enableAcompte ?? true),
+      stockLowAlertThreshold: toNumber(data?.stockLowAlertThreshold ?? 15, 15),
     };
 
     try {
@@ -97,6 +142,68 @@ export const pgService = {
       if (inserted) return inserted;
     } catch (e) {
       console.error('[Postgres] Failed to upsert company:', (e as any)?.message);
+      throw e;
+    }
+  },
+
+  async createCompanyForUser(data: any, userId: number) {
+    try {
+      const payload = {
+        userId: Number(userId),
+        name: data?.name || 'Nouvelle Entreprise',
+        commercialName: data?.commercialName || data?.name || 'Nouvelle Entreprise',
+        niu: data?.niu || null,
+        rccm: data?.rccm || null,
+        cdi: data?.cdi || null,
+        regime: data?.regime || 'REEL',
+        address: data?.address || null,
+        city: data?.city || 'Douala',
+        phone: data?.phone || null,
+        email: data?.email || null,
+        website: data?.website || null,
+        tvaRate: toNumber(data?.tvaRate, 0.1925),
+        acompteRate: toNumber(data?.acompteRate, 0.022),
+        enableTva: Boolean(data?.enableTva ?? true),
+        enableAcompte: Boolean(data?.enableAcompte ?? true),
+        stockLowAlertThreshold: toNumber(data?.stockLowAlertThreshold, 15),
+      };
+      const [inserted] = await db.insert(schema.companies).values(payload).returning();
+      if (inserted) return inserted;
+      return null;
+    } catch (e) {
+      console.error('[Postgres] createCompanyForUser error:', (e as any)?.message);
+      throw e;
+    }
+  },
+
+  async updateCompanyForUser(userId: number, updates: any) {
+    try {
+      const existing = await db.select().from(schema.companies).where(eq(schema.companies.userId, Number(userId))).limit(1);
+      if (existing.length === 0) return null;
+      const [updated] = await db.update(schema.companies).set(updates).where(eq(schema.companies.id, existing[0].id)).returning();
+      return updated || null;
+    } catch (e) {
+      console.error('[Postgres] updateCompanyForUser error:', (e as any)?.message);
+      throw e;
+    }
+  },
+
+  async getCompanyForUser(userId: number) {
+    try {
+      const rows = await db.select().from(schema.companies).where(eq(schema.companies.userId, Number(userId))).limit(1);
+      return rows.length > 0 ? rows[0] : null;
+    } catch (e) {
+      console.error('[Postgres] getCompanyForUser error:', (e as any)?.message);
+      throw e;
+    }
+  },
+
+  async getCompanyById(id: number) {
+    try {
+      const rows = await db.select().from(schema.companies).where(eq(schema.companies.id, Number(id))).limit(1);
+      return rows.length > 0 ? rows[0] : null;
+    } catch (e) {
+      console.error('[Postgres] getCompanyById error:', (e as any)?.message);
       throw e;
     }
   },
@@ -161,8 +268,7 @@ export const pgService = {
       return rows ?? [];
     } catch (e) {
       console.warn('[Postgres] Failed to load stock movements:', (e as any)?.message);
-    }
-    return memoryStore.stockMovements;
+      throw e;
   },
 
   async addStockMovement(mvt: any) {
@@ -192,14 +298,15 @@ export const pgService = {
       const rows = await db.select().from(schema.stockMovements).orderBy(desc(schema.stockMovements.id));
       return rows ?? [];
     } catch (e) {
-      console.error('[Postgres] getInventoryRecords error:', (e as any)?.message);
+        console.error('[Postgres] Failed to load inventory records:', (e as any)?.message);
       throw e;
     }
   },
 
   async recordInventoryReconciliation(data: any) {
     const productId = String(data.productId || '');
-    const product = memoryStore.products.find((p) => p.id === productId) || (await this.getProducts()).find((p: any) => p.id === productId);
+    const products = await this.getProducts();
+    const product = products.find((p: any) => String(p.id) === String(productId));
     if (!product) return null;
 
     const physicalStock = toNumber(data.physicalStock, product.stockCurrent);
@@ -399,9 +506,9 @@ export const pgService = {
       const rows = await db.select().from(schema.fraudAlerts).orderBy(desc(schema.fraudAlerts.id));
       return rows ?? [];
     } catch (e) {
-      console.warn('[Postgres] Falling back to memory for fraud alerts:', (e as any)?.message);
+      console.error('[Postgres] getFraudAlerts error:', (e as any)?.message);
+      return localFallback.fraudAlerts;
     }
-    return memoryStore.fraudAlerts;
   },
 
   async createFraudAlert(alert: any) {
@@ -419,11 +526,11 @@ export const pgService = {
       }).returning();
       if (inserted) return inserted;
     } catch (e) {
-      console.warn('[Postgres] Failed to insert fraud alert:', (e as any)?.message);
+      console.error('[Postgres] Failed to insert fraud alert:', (e as any)?.message);
+      const alertItem = { ...alert, id: `alert_${Date.now()}` };
+      localFallback.fraudAlerts.unshift(alertItem);
+      return alertItem;
     }
-    const alertItem = { ...alert, id: `alert_${Date.now()}` };
-    memoryStore.fraudAlerts.unshift(alertItem);
-    return alertItem;
   },
 
   async resolveFraudAlert(id: string) {
@@ -437,12 +544,13 @@ export const pgService = {
         if (updated) return updated;
       }
     } catch (e) {
-      console.warn('[Postgres] Failed to resolve alert:', (e as any)?.message);
+      console.error('[Postgres] Failed to resolve alert:', (e as any)?.message);
+      // fallback to local in-memory
     }
 
-    const idx = memoryStore.fraudAlerts.findIndex((a) => a.id === id);
+    const idx = localFallback.fraudAlerts.findIndex((a: any) => a.id === id);
     if (idx >= 0) {
-      const [removed] = memoryStore.fraudAlerts.splice(idx, 1);
+      const [removed] = localFallback.fraudAlerts.splice(idx, 1);
       return removed;
     }
     return null;
@@ -453,17 +561,17 @@ export const pgService = {
   },
 
   async getMobileMoneyPayments() {
-    return memoryStore.mobileMoneyPayments;
+    return localFallback.mobileMoneyPayments;
   },
 
   async createMobileMoneyPayment(payment: any) {
     const record = { ...payment, createdAt: new Date().toISOString() };
-    memoryStore.mobileMoneyPayments.unshift(record);
+    localFallback.mobileMoneyPayments.unshift(record);
     return record;
   },
 
   async updateMobileMoneyPayment(transactionId: string, status: string) {
-    const payment = memoryStore.mobileMoneyPayments.find((p) => p.transactionId === transactionId);
+    const payment = localFallback.mobileMoneyPayments.find((p: any) => p.transactionId === transactionId);
     if (payment) {
       payment.status = status as any;
       payment.confirmedAt = new Date().toISOString();

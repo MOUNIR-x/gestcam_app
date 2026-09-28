@@ -1,8 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { GoogleGenAI } from '@google/genai';
 import { db } from '../data/store';
+import authMiddleware from '../middleware/auth.js';
 
 const router = Router();
+
+// Require authentication for AI access (prevents anonymous data leakage)
+router.use(authMiddleware);
 
 // POST /api/ai/copilot
 router.post('/copilot', async (req: Request, res: Response) => {

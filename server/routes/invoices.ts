@@ -1,9 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../data/store';
+import authMiddleware from '../middleware/auth.js';
 import { Invoice, InvoiceItem } from '../../src/types/index';
 import { pgService } from '../services/pgService.js';
 
 const router = Router();
+
+// Protect invoices routes: require authenticated user (tenant isolation requires schema changes)
+router.use(authMiddleware);
 
 // GET /api/invoices
 router.get('/', async (req: Request, res: Response) => {

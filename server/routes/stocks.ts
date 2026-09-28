@@ -1,9 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../data/store';
+import authMiddleware from '../middleware/auth.js';
 import { Product, StockMovement, InventoryRecord } from '../../src/types/index';
 import { pgService } from '../services/pgService.js';
 
 const router = Router();
+
+// Require authentication for stock operations
+router.use(authMiddleware);
 
 // GET /api/stocks/products
 router.get('/products', async (req: Request, res: Response) => {
