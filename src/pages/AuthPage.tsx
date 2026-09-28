@@ -30,8 +30,30 @@ export const AuthPage: React.FC<{ initialMode?: 'login' | 'register' }> = ({ ini
 
   const handleLoginSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    showToast('Connexion réussie ! Bienvenue sur GestCam.');
-    navigate('/dashboard');
+    (async () => {
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: 'Erreur login' }));
+          showToast(err.error || 'Échec de la connexion');
+          return;
+        }
+        const data = await res.json();
+        if (data.token) {
+          localStorage.setItem('gestcam_token', data.token);
+        }
+        if (data.user) updateCurrentUser(data.user);
+        if (data.company) updateCompanySettings(data.company);
+        showToast('Connexion réussie ! Bienvenue sur GestCam.');
+        navigate('/dashboard');
+      } catch (err: any) {
+        showToast(err?.message || 'Erreur réseau');
+      }
+    })();
   };
 
   const handleRegisterSubmit = (e: React.FormEvent) => {

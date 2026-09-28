@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -10,7 +11,6 @@ import mobileMoneyRoutes from './server/routes/mobileMoney.js';
 import taxRoutes from './server/routes/tax.js';
 import aiRoutes from './server/routes/ai.js';
 import { pgService } from './server/services/pgService.js';
-import { seedDatabase } from './server/data/seed.js';
 
 dotenv.config();
 
@@ -23,14 +23,7 @@ async function startServer() {
   const app = express();
 
   if (process.env.AUTO_SEED_DB === 'true') {
-    try {
-      const seeded = await seedDatabase();
-      if (seeded) {
-        console.log('[DB] Seed complete');
-      }
-    } catch (error: any) {
-      console.warn('[DB] Seed skipped or failed:', error?.message || error);
-    }
+    console.warn('[DB] AUTO_SEED_DB is ignored: no seed module is configured. Use db:push to create the schema.');
   }
 
   app.use(express.json());
@@ -88,7 +81,19 @@ async function startServer() {
   });
 
   // Mount API modules
+  // Public routes that must remain reachable without a token
   app.use('/api/auth', authRoutes);
+  // Mount webhook endpoint before auth middleware so external providers can call it
+  // (mobileMoneyRoutes exports webhookHandler)
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  import('./server/routes/mobileMoney.js').then((m) => {
+    if (m.webhookHandler) app.post('/api/mobile-money/webhook', m.webhookHandler);
+  }).catch(() => {});
+
+  // Protect following routes with auth middleware
+  const { default: authMiddleware } = await import('./server/middleware/auth.js');
+  app.use('/api', authMiddleware);
+
   app.use('/api/invoices', invoiceRoutes);
   app.use('/api/stocks', stockRoutes);
   app.use('/api/treasury', treasuryRoutes);

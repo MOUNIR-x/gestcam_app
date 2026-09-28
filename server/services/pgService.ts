@@ -1,7 +1,7 @@
 import { db } from '../../src/db/index.ts';
 import * as schema from '../../src/db/schema.ts';
 import { eq, desc } from 'drizzle-orm';
-import { db as memoryStore } from '../data/store.js';
+// NOTE: removed in-memory fallback to force PostgreSQL persistence.
 
 const toNumber = (value: unknown, fallback = 0) => {
   const numeric = Number(value);
@@ -14,9 +14,9 @@ export const pgService = {
       const rows = await db.select().from(schema.users).limit(1);
       if (rows && rows.length > 0) return rows[0];
     } catch (e) {
-      console.warn('[Postgres] Falling back to memory for user:', (e as any)?.message);
+      console.error('[Postgres] getUser error:', (e as any)?.message);
+      throw e;
     }
-    return memoryStore.user;
   },
 
   async upsertUser(data: any) {
@@ -48,11 +48,9 @@ export const pgService = {
       const [inserted] = await db.insert(schema.users).values(payload).returning();
       if (inserted) return inserted;
     } catch (e) {
-      console.warn('[Postgres] Failed to upsert user:', (e as any)?.message);
+      console.error('[Postgres] Failed to upsert user:', (e as any)?.message);
+      throw e;
     }
-
-    memoryStore.user = { ...memoryStore.user, ...payload };
-    return memoryStore.user;
   },
 
   async getCompany() {
@@ -60,9 +58,9 @@ export const pgService = {
       const rows = await db.select().from(schema.companies).limit(1);
       if (rows && rows.length > 0) return rows[0];
     } catch (e) {
-      console.warn('[Postgres] Falling back to memory for company:', (e as any)?.message);
+      console.error('[Postgres] getCompany error:', (e as any)?.message);
+      throw e;
     }
-    return memoryStore.company;
   },
 
   async upsertCompany(data: any) {
@@ -98,11 +96,9 @@ export const pgService = {
       const [inserted] = await db.insert(schema.companies).values(payload).returning();
       if (inserted) return inserted;
     } catch (e) {
-      console.warn('[Postgres] Failed to upsert company:', (e as any)?.message);
+      console.error('[Postgres] Failed to upsert company:', (e as any)?.message);
+      throw e;
     }
-
-    memoryStore.company = { ...memoryStore.company, ...payload };
-    return memoryStore.company;
   },
 
   async getProducts() {
@@ -110,9 +106,9 @@ export const pgService = {
       const rows = await db.select().from(schema.products).orderBy(schema.products.id);
       return rows ?? [];
     } catch (e) {
-      console.warn('[Postgres] Falling back to memory for products:', (e as any)?.message);
+      console.error('[Postgres] getProducts error:', (e as any)?.message);
+      throw e;
     }
-    return memoryStore.products;
   },
 
   async addProduct(p: any) {
@@ -131,11 +127,9 @@ export const pgService = {
       }).returning();
       if (inserted) return inserted;
     } catch (e) {
-      console.warn('[Postgres] Failed to insert product in SQL, writing to memory store:', (e as any)?.message);
+      console.error('[Postgres] Failed to insert product in SQL:', (e as any)?.message);
+      throw e;
     }
-    const newProd = { ...p, id: `prod_${Date.now()}` };
-    memoryStore.products.unshift(newProd);
-    return newProd;
   },
 
   async updateProductStock(productId: string, stockCurrent: number, cmup: number, purchasePrice: number, marginPercent: number) {
@@ -157,15 +151,8 @@ export const pgService = {
       }
     }
 
-    const product = memoryStore.products.find((p) => p.id === productId);
-    if (product) {
-      product.stockCurrent = toNumber(stockCurrent, product.stockCurrent);
-      product.cmup = toNumber(cmup, product.cmup);
-      product.purchasePrice = toNumber(purchasePrice, product.purchasePrice);
-      product.marginPercent = toNumber(marginPercent, product.marginPercent);
-      return product;
-    }
-    return null;
+      // If product ID is not numeric we cannot update SQL
+      throw new Error('Product ID not numeric; update aborted');
   },
 
   async getStockMovements() {
@@ -195,11 +182,9 @@ export const pgService = {
       }).returning();
       if (inserted) return inserted;
     } catch (e) {
-      console.warn('[Postgres] Failed to insert stock movement:', (e as any)?.message);
+      console.error('[Postgres] Failed to insert stock movement:', (e as any)?.message);
+      throw e;
     }
-    const movement = { ...mvt, id: `mvt_${Date.now()}` };
-    memoryStore.stockMovements.unshift(movement);
-    return movement;
   },
 
   async getInventoryRecords() {
@@ -207,9 +192,9 @@ export const pgService = {
       const rows = await db.select().from(schema.stockMovements).orderBy(desc(schema.stockMovements.id));
       return rows ?? [];
     } catch (e) {
-      console.warn('[Postgres] Failed to load inventory records:', (e as any)?.message);
+      console.error('[Postgres] getInventoryRecords error:', (e as any)?.message);
+      throw e;
     }
-    return memoryStore.inventoryRecords;
   },
 
   async recordInventoryReconciliation(data: any) {
@@ -240,8 +225,25 @@ export const pgService = {
       notes: data.notes || 'Réconciliation du stock'
     };
 
-    memoryStore.inventoryRecords.unshift(record);
-    return record;
+    try {
+      const [inserted] = await db.insert(schema.stockMovements).values({
+        reference_doc: record.id,
+        date: record.date,
+        type: 'AJUSTEMENT',
+        product_id: Number(productId) || null,
+        product_name: record.productName,
+        quantity: record.variance,
+        unit_cost: product.cmup || 0,
+        total_cost: Math.round(record.variance * (product.cmup || 0)),
+        new_cmup: product.cmup || 0,
+        reason: record.notes,
+        performed_by: 'system_inventory_reconciliation'
+      }).returning();
+      return record;
+    } catch (e) {
+      console.error('[Postgres] Failed to record inventory reconciliation:', (e as any)?.message);
+      throw e;
+    }
   },
 
   async getInvoices() {
@@ -249,9 +251,9 @@ export const pgService = {
       const rows = await db.select().from(schema.invoices).orderBy(desc(schema.invoices.id));
       return rows ?? [];
     } catch (e) {
-      console.warn('[Postgres] Falling back to memory for invoices:', (e as any)?.message);
+      console.error('[Postgres] getInvoices error:', (e as any)?.message);
+      throw e;
     }
-    return memoryStore.invoices;
   },
 
   async getInvoiceById(id: string) {
@@ -261,9 +263,10 @@ export const pgService = {
       const rowsById = await db.select().from(schema.invoices).where(eq(schema.invoices.id, Number(id))).limit(1);
       if (rowsById.length > 0) return rowsById[0];
     } catch (e) {
-      console.warn('[Postgres] Failed to load invoice by id:', (e as any)?.message);
+      console.error('[Postgres] Failed to load invoice by id:', (e as any)?.message);
+      throw e;
     }
-    return memoryStore.invoices.find((i) => i.id === id || i.invoiceNumber === id) || null;
+    return null;
   },
 
   async createInvoice(inv: any) {
@@ -289,11 +292,9 @@ export const pgService = {
       }).returning();
       if (inserted) return inserted;
     } catch (e) {
-      console.warn('[Postgres] Failed to insert invoice in SQL, using memory:', (e as any)?.message);
+      console.error('[Postgres] Failed to insert invoice in SQL:', (e as any)?.message);
+      throw e;
     }
-    const newInvoice = { ...inv, id: `inv_${Date.now()}` };
-    memoryStore.invoices.unshift(newInvoice);
-    return newInvoice;
   },
 
   async updateInvoiceStatus(id: string | number, status: string, paymentMethod?: string) {
@@ -304,15 +305,12 @@ export const pgService = {
           .set({ status, paymentMethod: paymentMethod || undefined })
           .where(eq(schema.invoices.id, numericId));
       } catch (e) {
-        console.warn('[Postgres] Failed to update invoice in SQL:', (e as any)?.message);
+        console.error('[Postgres] Failed to update invoice in SQL:', (e as any)?.message);
+        throw e;
       }
     }
-    const found = memoryStore.invoices.find(i => i.id === String(id) || i.id === `inv_${id}`);
-    if (found) {
-      found.status = status as any;
-      if (paymentMethod) (found as any).paymentMethod = paymentMethod;
-    }
-    return found;
+    // If id is not numeric we cannot update SQL
+    throw new Error('Invoice ID not numeric; update aborted');
   },
 
   async getClients() {
@@ -320,9 +318,9 @@ export const pgService = {
       const rows = await db.select().from(schema.clients);
       return rows ?? [];
     } catch (e) {
-      console.warn('[Postgres] Falling back to memory for clients:', (e as any)?.message);
+      console.error('[Postgres] getClients error:', (e as any)?.message);
+      throw e;
     }
-    return memoryStore.clients;
   },
 
   async createClient(client: any) {
@@ -340,11 +338,9 @@ export const pgService = {
       }).returning();
       if (inserted) return inserted;
     } catch (e) {
-      console.warn('[Postgres] Failed to insert client in SQL:', (e as any)?.message);
+      console.error('[Postgres] Failed to insert client in SQL:', (e as any)?.message);
+      throw e;
     }
-    const newClient = { ...client, id: `cli_${Date.now()}` };
-    memoryStore.clients.unshift(newClient);
-    return newClient;
   },
 
   async getSuppliers() {
@@ -352,9 +348,9 @@ export const pgService = {
       const rows = await db.select().from(schema.suppliers);
       return rows ?? [];
     } catch (e) {
-      console.warn('[Postgres] Falling back to memory for suppliers:', (e as any)?.message);
+      console.error('[Postgres] getSuppliers error:', (e as any)?.message);
+      throw e;
     }
-    return [];
   },
 
   async getTreasuryAccounts() {
@@ -362,9 +358,9 @@ export const pgService = {
       const rows = await db.select().from(schema.treasuryAccounts);
       return rows ?? [];
     } catch (e) {
-      console.warn('[Postgres] Falling back to memory for treasury accounts:', (e as any)?.message);
+      console.error('[Postgres] getTreasuryAccounts error:', (e as any)?.message);
+      throw e;
     }
-    return memoryStore.treasuryAccounts;
   },
 
   async getTreasuryTransactions() {
@@ -372,9 +368,9 @@ export const pgService = {
       const rows = await db.select().from(schema.treasuryTransactions).orderBy(desc(schema.treasuryTransactions.id));
       return rows ?? [];
     } catch (e) {
-      console.warn('[Postgres] Falling back to memory for treasury txs:', (e as any)?.message);
+      console.error('[Postgres] getTreasuryTransactions error:', (e as any)?.message);
+      throw e;
     }
-    return memoryStore.treasuryTransactions;
   },
 
   async recordTreasuryTransaction(tx: any) {
@@ -393,11 +389,9 @@ export const pgService = {
       }).returning();
       if (inserted) return inserted;
     } catch (e) {
-      console.warn('[Postgres] Failed to insert treasury tx in SQL:', (e as any)?.message);
+      console.error('[Postgres] Failed to insert treasury tx in SQL:', (e as any)?.message);
+      throw e;
     }
-    const newTx = { ...tx, id: `tx_${Date.now()}` };
-    memoryStore.treasuryTransactions.unshift(newTx);
-    return newTx;
   },
 
   async getFraudAlerts() {

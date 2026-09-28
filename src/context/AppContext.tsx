@@ -355,7 +355,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast(`Inventaire physique consigné pour ${rec.productName}`);
   };
 
-  const addInvoice = (inv: Omit<Invoice, 'id' | 'invoiceNumber'>): Invoice => {
+  const addInvoice = async (inv: Omit<Invoice, 'id' | 'invoiceNumber'>): Promise<Invoice> => {
     const count = invoices.length + 895;
     const invoiceNumber = `FACT-2026-${count.toString().padStart(4, '0')}`;
     const newInvoice: Invoice = {
@@ -364,60 +364,72 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       invoiceNumber
     };
 
-    setInvoices((prev) => [newInvoice, ...prev]);
-    api.createInvoice(newInvoice).catch(() => {});
+    try {
+      const res = await api.createInvoice(newInvoice);
+      const created = res?.invoice || newInvoice;
+      setInvoices((prev) => [created, ...prev]);
 
-    // Deduct stock for invoiced items
-    inv.items.forEach((item) => {
-      setProducts((prev) =>
-        prev.map((p) =>
-          p.id === item.productId
-            ? { ...p, stockCurrent: Math.max(0, p.stockCurrent - item.quantity) }
-            : p
-        )
-      );
-    });
+      // Deduct stock for invoiced items (frontend view)
+      inv.items.forEach((item) => {
+        setProducts((prev) =>
+          prev.map((p) =>
+            p.id === item.productId
+              ? { ...p, stockCurrent: Math.max(0, p.stockCurrent - item.quantity) }
+              : p
+          )
+        );
+      });
 
-    // Update client balance if not fully paid
-    if (inv.status !== 'PAYEE') {
-      setClients((prev) =>
-        prev.map((c) =>
-          c.id === inv.clientId
-            ? {
-                ...c,
-                totalSpent: c.totalSpent + inv.totalHT,
-                outstandingBalance: c.outstandingBalance + inv.netAPayer,
-                invoicesCount: c.invoicesCount + 1,
-                lastOrderDate: inv.date
-              }
-            : c
-        )
-      );
-    } else {
-      setClients((prev) =>
-        prev.map((c) =>
-          c.id === inv.clientId
-            ? {
-                ...c,
-                totalSpent: c.totalSpent + inv.totalHT,
-                invoicesCount: c.invoicesCount + 1,
-                lastOrderDate: inv.date
-              }
-            : c
-        )
-      );
+      // Update client balance if not fully paid
+      if (inv.status !== 'PAYEE') {
+        setClients((prev) =>
+          prev.map((c) =>
+            c.id === inv.clientId
+              ? {
+                  ...c,
+                  totalSpent: c.totalSpent + inv.totalHT,
+                  outstandingBalance: c.outstandingBalance + inv.netAPayer,
+                  invoicesCount: c.invoicesCount + 1,
+                  lastOrderDate: inv.date
+                }
+              : c
+          )
+        );
+      } else {
+        setClients((prev) =>
+          prev.map((c) =>
+            c.id === inv.clientId
+              ? {
+                  ...c,
+                  totalSpent: c.totalSpent + inv.totalHT,
+                  invoicesCount: c.invoicesCount + 1,
+                  lastOrderDate: inv.date
+                }
+              : c
+          )
+        );
+      }
+
+      showToast(`Facture ${invoiceNumber} créée avec succès`);
+      return created;
+    } catch (e: any) {
+      // Fallback to local memory only if backend fails
+      setInvoices((prev) => [newInvoice, ...prev]);
+      showToast('Facture enregistrée localement (backend indisponible)');
+      return newInvoice;
     }
-
-    showToast(`Facture ${invoiceNumber} créée avec succès`);
-    return newInvoice;
   };
 
-  const updateInvoiceStatus = (id: string, status: Invoice['status']) => {
-    setInvoices((prev) =>
-      prev.map((inv) => (inv.id === id ? { ...inv, status } : inv))
-    );
-    api.updateInvoiceStatus(id, status).catch(() => {});
-    showToast(`Statut de la facture mis à jour : ${status}`);
+  const updateInvoiceStatus = async (id: string, status: Invoice['status']) => {
+    try {
+      await api.updateInvoiceStatus(id, status).catch(() => { throw new Error('API failed'); });
+      setInvoices((prev) => prev.map((inv) => (inv.id === id ? { ...inv, status } : inv)));
+      showToast(`Statut de la facture mis à jour : ${status}`);
+    } catch (e) {
+      // optimistic local update if unreachable
+      setInvoices((prev) => prev.map((inv) => (inv.id === id ? { ...inv, status } : inv)));
+      showToast('Mise à jour locale du statut (backend indisponible)');
+    }
   };
 
   const addClient = (c: Omit<Client, 'id' | 'totalSpent' | 'outstandingBalance' | 'invoicesCount'>) => {
@@ -497,24 +509,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const response = await api.collectMobileMoney(params);
       if (response.success) {
-        if (params.invoiceId) {
-          updateInvoiceStatus(params.invoiceId, 'PAYEE');
+        // Backend now returns status PENDING until webhook confirmation.
+        if (response.payment?.status === 'SUCCESSFUL') {
+          if (params.invoiceId) {
+            updateInvoiceStatus(params.invoiceId, 'PAYEE');
+          }
+          const account = treasuryAccounts.find((a) => a.type === params.operator) || treasuryAccounts[0];
+          addTreasuryTransaction({
+            date: new Date().toISOString().split('T')[0],
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            accountId: account.id,
+            accountName: account.name,
+            channel: params.operator,
+            type: 'ENTREE',
+            category: 'Encaissement Vente',
+            amount: params.amount,
+            description: `Règlement Mobile Money ${params.operator === 'MTN_MOMO' ? 'MTN MoMo' : 'Orange Money'} (${params.phoneNumber})`,
+            referenceNumber: response.payment?.referenceNumber || `MOMO-${Date.now().toString().slice(-6)}`,
+            status: 'COMPLETE'
+          });
+          showToast(`Paiement Mobile Money reçu avec succès (${params.amount} FCFA)`);
+        } else {
+          // Payment pending: wait for webhook, do not double-count locally
+          showToast('Paiement Mobile Money initié, en attente de confirmation serveur.');
         }
-        const account = treasuryAccounts.find((a) => a.type === params.operator) || treasuryAccounts[0];
-        addTreasuryTransaction({
-          date: new Date().toISOString().split('T')[0],
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          accountId: account.id,
-          accountName: account.name,
-          channel: params.operator,
-          type: 'ENTREE',
-          category: 'Encaissement Vente',
-          amount: params.amount,
-          description: `Règlement Mobile Money ${params.operator === 'MTN_MOMO' ? 'MTN MoMo' : 'Orange Money'} (${params.phoneNumber})`,
-          referenceNumber: response.payment?.referenceNumber || `MOMO-${Date.now().toString().slice(-6)}`,
-          status: 'COMPLETE'
-        });
-        showToast(`Paiement Mobile Money reçu avec succès (${params.amount} FCFA)`);
       }
       return response;
     } catch (err: any) {

@@ -1,14 +1,21 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../data/store';
+import { signToken } from '../middleware/auth.js';
+
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || '';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 
 const router = Router();
 
 // GET /api/auth/me
 router.get('/me', (req: Request, res: Response) => {
+  const auth = (req as any).auth || null;
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' });
   res.json({
     user: db.user,
     company: db.company,
-    authenticated: true
+    authenticated: true,
+    auth
   });
 });
 
@@ -19,8 +26,14 @@ router.post('/login', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Email et mot de passe requis' });
   }
 
-  // Update last login or match demo user
-  const token = `gestcam_jwt_${Date.now()}`;
+  // If ADMIN credentials are configured, validate against them
+  if (ADMIN_EMAIL && ADMIN_PASSWORD) {
+    if (email !== ADMIN_EMAIL || password !== ADMIN_PASSWORD) {
+      return res.status(401).json({ error: 'Identifiants invalides' });
+    }
+  }
+
+  const token = signToken({ email });
   res.json({
     token,
     user: db.user,

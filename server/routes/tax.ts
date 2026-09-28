@@ -6,21 +6,25 @@ const router = Router();
 // GET /api/tax/declaration-mensuelle
 // Generates Cameroon DGI monthly tax pre-declaration summary according to Loi de Finances 2026
 router.get('/declaration-mensuelle', (req: Request, res: Response) => {
-  const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
-  const paidInvoices = db.invoices.filter(i => i.status === 'PAYEE');
+  const periode = (req.query.periode as string) || new Date().toISOString().slice(0, 7); // YYYY-MM
+  const deductiblePercent = Number(process.env.TAX_DEDUCTIBLE_PERCENT ?? 0.65);
+  const timbrePerInvoice = Number(process.env.TAX_DUTY_PER_INVOICE ?? 1000);
+
+  // Only consider invoices paid inside the requested period
+  const paidInvoices = db.invoices.filter(i => i.status === 'PAYEE' && String(i.date || '').startsWith(periode));
 
   const totalCAHT = paidInvoices.reduce((s, i) => s + i.totalHT, 0);
   const totalTVACollectee = paidInvoices.reduce((s, i) => s + i.tvaAmount, 0);
   const totalAirsRetenu = paidInvoices.reduce((s, i) => s + i.acompteAmount, 0);
 
-  // Estimations déductibles (approvisionnements et achats fournisseurs)
+  // Estimations déductibles (approvisionnements et achats fournisseurs) within period
   const totalAchats = db.stockMovements
-    .filter(m => m.type === 'ENTREE')
+    .filter(m => m.type === 'ENTREE' && String(m.date || '').startsWith(periode))
     .reduce((s, m) => s + m.totalCost, 0);
 
-  const tvaDeductibleEstimee = Math.round(totalAchats * 0.1925 * 0.65); // 65% déductible moyen PME
+  const tvaDeductibleEstimee = Math.round(totalAchats * 0.1925 * deductiblePercent);
   const tvaNetteADeclarer = Math.max(0, totalTVACollectee - tvaDeductibleEstimee);
-  const droitTimbreTotal = paidInvoices.length * 1000; // 1 000 FCFA par facture
+  const droitTimbreTotal = paidInvoices.length * timbrePerInvoice;
 
   // Total à verser au Centre des Impôts avant le 15 du mois
   const totalAPayerRecette = tvaNetteADeclarer + totalAirsRetenu + droitTimbreTotal;
