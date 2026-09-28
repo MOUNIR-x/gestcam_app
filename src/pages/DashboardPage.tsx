@@ -1,10 +1,9 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { formatFCFA } from '../types';
 import { KPICard } from '../components/ui/KPICard';
 import { BadgeIA } from '../components/ui/BadgeIA';
 import { WhatsAppButton } from '../components/ui/WhatsAppButton';
-import { mockSalesMonthly } from '../data/mockData';
 import {
   TrendingUp,
   Wallet,
@@ -17,6 +16,22 @@ import {
   Sparkles,
   Layers
 } from 'lucide-react';
+
+const buildMonthlySales = (invoices: any[]) => {
+  const labels = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jui', 'Juil', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'];
+  const monthMap = new Map(labels.map((label, index) => [label, { month: label, sales: 0, target: 0 }]));
+
+  invoices.forEach((invoice) => {
+    const date = new Date(invoice.date);
+    if (Number.isNaN(date.getTime())) return;
+    const monthLabel = labels[date.getMonth()];
+    const current = monthMap.get(monthLabel) || { month: monthLabel, sales: 0, target: 0 };
+    current.sales += Number(invoice.totalHT || 0);
+    monthMap.set(monthLabel, current);
+  });
+
+  return labels.map((label) => monthMap.get(label) || { month: label, sales: 0, target: 0 });
+};
 
 export const DashboardPage: React.FC = () => {
   const {
@@ -42,8 +57,8 @@ export const DashboardPage: React.FC = () => {
   const currentMonthSales = invoices.reduce((sum, inv) => sum + inv.totalHT, 0);
   const pendingInvoices = invoices.filter((inv) => inv.status === 'EN_ATTENTE' || inv.status === 'EN_RETARD');
 
-  // Max value for chart scaling
-  const maxSales = Math.max(...mockSalesMonthly.map((m) => Math.max(m.sales, m.target)));
+  const salesMonthly = useMemo(() => buildMonthlySales(invoices), [invoices]);
+  const maxSales = Math.max(1, ...salesMonthly.flatMap((m) => [m.sales, m.target]));
 
   return (
     <div className="space-y-6">
@@ -177,7 +192,7 @@ export const DashboardPage: React.FC = () => {
         {/* Clean SVG / Bar Chart */}
         <div className="overflow-x-auto pb-2">
           <div className="min-w-[500px] h-64 flex items-end gap-2 sm:gap-4 pt-6 pb-2 border-b border-slate-100 dark:border-slate-800">
-            {mockSalesMonthly.map((item, idx) => {
+            {salesMonthly.map((item, idx) => {
               const heightPercent = Math.round((item.sales / maxSales) * 100);
               const targetHeightPercent = Math.round((item.target / maxSales) * 100);
               const isHovered = hoveredMonth === idx;
@@ -208,7 +223,7 @@ export const DashboardPage: React.FC = () => {
                   <div
                     style={{ height: `${heightPercent}%` }}
                     className={`w-full max-w-[38px] rounded-t-md transition-all duration-200 ${
-                      idx === mockSalesMonthly.length - 1
+                      idx === salesMonthly.length - 1
                         ? 'bg-blue-600 dark:bg-blue-500 shadow-sm'
                         : 'bg-slate-200 dark:bg-slate-800 hover:bg-blue-400 dark:hover:bg-blue-600'
                     }`}

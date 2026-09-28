@@ -1,4 +1,5 @@
-// In-memory data store for GestCam Cameroon PME Backend
+// In-memory fallback store for GestCam Cameroon PME Backend.
+// The application source of truth is PostgreSQL via pgService.
 import {
   Product,
   StockMovement,
@@ -14,21 +15,6 @@ import {
   CompanySettings,
   UserProfile
 } from '../../src/types/index';
-import {
-  mockCompanySettings,
-  mockCurrentUser,
-  mockProducts,
-  mockStockMovements,
-  mockInventoryRecords,
-  mockInvoices,
-  mockClients,
-  mockSuppliers,
-  mockPurchaseOrders,
-  mockTreasuryAccounts,
-  mockTreasuryTransactions,
-  mockFraudAlerts,
-  mockEmployees
-} from '../../src/data/mockData';
 
 export interface MobileMoneyPayment {
   transactionId: string;
@@ -81,9 +67,39 @@ const initialCleanTreasuryAccounts: TreasuryAccount[] = [
   }
 ];
 
+const fallbackUser: UserProfile = {
+  id: 'local-user',
+  name: 'Gestionnaire GestCam',
+  email: 'admin@gestcam.local',
+  phone: '',
+  role: 'Gérant PME',
+  companyName: 'Entreprise GestCam',
+  city: 'Douala',
+  avatarColor: 'bg-slate-600 text-white'
+};
+
+const fallbackCompany: CompanySettings = {
+  name: 'Entreprise GestCam',
+  commercialName: 'GestCam',
+  niu: '',
+  rccm: '',
+  cdi: '',
+  regime: 'REEL',
+  address: '',
+  city: 'Douala',
+  phone: '',
+  email: 'admin@gestcam.local',
+  website: '',
+  tvaRate: 0.1925,
+  acompteRate: 0.022,
+  enableTva: true,
+  enableAcompte: true,
+  stockLowAlertThreshold: 10
+};
+
 class BackendStore {
-  public company: CompanySettings = { ...mockCompanySettings };
-  public user: UserProfile = { ...mockCurrentUser };
+  public company: CompanySettings = { ...fallbackCompany };
+  public user: UserProfile = { ...fallbackUser };
   public products: Product[] = [];
   public stockMovements: StockMovement[] = [];
   public inventoryRecords: InventoryRecord[] = [];

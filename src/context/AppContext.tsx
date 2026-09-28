@@ -15,24 +15,38 @@ import {
   Employee,
   AIMessage
 } from '../types';
-import {
-  mockCurrentUser,
-  mockCompanySettings,
-  mockProducts,
-  mockStockMovements,
-  mockInventoryRecords,
-  mockInvoices,
-  mockClients,
-  mockSuppliers,
-  mockPurchaseOrders,
-  mockTreasuryAccounts,
-  mockTreasuryTransactions,
-  mockFraudAlerts,
-  mockEmployees,
-  mockAIChatHistory
-} from '../data/mockData';
 
 import { api } from '../services/api';
+
+const emptyUser: UserProfile = {
+  id: '',
+  name: 'Gestionnaire GestCam',
+  email: '',
+  phone: '',
+  role: 'Gérant PME',
+  companyName: '',
+  city: 'Douala',
+  avatarColor: 'bg-slate-600 text-white'
+};
+
+const emptyCompanySettings: CompanySettings = {
+  name: '',
+  commercialName: '',
+  niu: '',
+  rccm: '',
+  cdi: '',
+  regime: 'REEL',
+  address: '',
+  city: 'Douala',
+  phone: '',
+  email: '',
+  website: '',
+  tvaRate: 0.1925,
+  acompteRate: 0.022,
+  enableTva: true,
+  enableAcompte: true,
+  stockLowAlertThreshold: 10
+};
 
 interface AppContextType {
   theme: 'light' | 'dark';
@@ -148,8 +162,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   ];
 
-  const [currentUser, setCurrentUser] = useState<UserProfile>(mockCurrentUser);
-  const [companySettings, setCompanySettings] = useState<CompanySettings>(mockCompanySettings);
+  const [currentUser, setCurrentUser] = useState<UserProfile>(emptyUser);
+  const [companySettings, setCompanySettings] = useState<CompanySettings>(emptyCompanySettings);
   const [products, setProducts] = useState<Product[]>([]);
   const [stockMovements, setStockMovements] = useState<StockMovement[]>([]);
   const [inventoryRecords, setInventoryRecords] = useState<InventoryRecord[]>([]);

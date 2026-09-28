@@ -10,6 +10,7 @@ import mobileMoneyRoutes from './server/routes/mobileMoney.js';
 import taxRoutes from './server/routes/tax.js';
 import aiRoutes from './server/routes/ai.js';
 import { pgService } from './server/services/pgService.js';
+import { seedDatabase } from './server/data/seed.js';
 
 dotenv.config();
 
@@ -20,6 +21,17 @@ const PORT = Number(process.env.PORT) || 3000;
 
 async function startServer() {
   const app = express();
+
+  if (process.env.AUTO_SEED_DB === 'true') {
+    try {
+      const seeded = await seedDatabase();
+      if (seeded) {
+        console.log('[DB] Seed complete');
+      }
+    } catch (error: any) {
+      console.warn('[DB] Seed skipped or failed:', error?.message || error);
+    }
+  }
 
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
