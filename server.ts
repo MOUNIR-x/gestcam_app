@@ -7,9 +7,13 @@ import authRoutes from './server/routes/auth.js';
 import invoiceRoutes from './server/routes/invoices.js';
 import stockRoutes from './server/routes/stocks.js';
 import treasuryRoutes from './server/routes/treasury.js';
-import mobileMoneyRoutes from './server/routes/mobileMoney.js';
+import mobileMoneyRoutes, { webhookHandler } from './server/routes/mobileMoney.js';
 import taxRoutes from './server/routes/tax.js';
 import aiRoutes from './server/routes/ai.js';
+import clientRoutes from './server/routes/clients.js';
+import supplierRoutes from './server/routes/suppliers.js';
+import employeeRoutes from './server/routes/employees.js';
+import purchaseOrderRoutes from './server/routes/purchaseOrders.js';
 import { pgService } from './server/services/pgService.js';
 
 dotenv.config();
@@ -83,12 +87,8 @@ async function startServer() {
   // Mount API modules
   // Public routes that must remain reachable without a token
   app.use('/api/auth', authRoutes);
-  // Mount webhook endpoint before auth middleware so external providers can call it
-  // (mobileMoneyRoutes exports webhookHandler)
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  import('./server/routes/mobileMoney.js').then((m) => {
-    if (m.webhookHandler) app.post('/api/mobile-money/webhook', m.webhookHandler);
-  }).catch(() => {});
+  // Register synchronously so a callback cannot arrive before its route exists.
+  app.post('/api/mobile-money/webhook', webhookHandler);
 
   // Protect following routes with auth middleware
   const { default: authMiddleware } = await import('./server/middleware/auth.js');
@@ -100,6 +100,10 @@ async function startServer() {
   app.use('/api/mobile-money', mobileMoneyRoutes);
   app.use('/api/tax', taxRoutes);
   app.use('/api/ai', aiRoutes);
+  app.use('/api/clients', clientRoutes);
+  app.use('/api/suppliers', supplierRoutes);
+  app.use('/api/employees', employeeRoutes);
+  app.use('/api/purchase-orders', purchaseOrderRoutes);
 
   // Mount Vite development middlewares or serve static build
   if (!isProd) {

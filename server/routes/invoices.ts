@@ -1,67 +1,90 @@
 import { Router, Request, Response } from 'express';
-import { db } from '../data/store';
 import authMiddleware from '../middleware/auth.js';
-import { Invoice, InvoiceItem } from '../../src/types/index';
+import { InvoiceItem } from '../../src/types/index';
 import { pgService } from '../services/pgService.js';
+import { db } from '../../src/db/index.js';
+import * as schema from '../../src/db/schema.js';
+import { eq, and, count } from 'drizzle-orm';
 
 const router = Router();
 
-// Protect invoices routes: require authenticated user (tenant isolation requires schema changes)
+// Protect invoices routes: require authenticated user with tenant context
 router.use(authMiddleware);
 
 // GET /api/invoices
 router.get('/', async (req: Request, res: Response) => {
   const { status, clientId, search } = req.query;
-  const pgInvs = await pgService.getInvoices();
-  let list = (pgInvs && pgInvs.length > 0) ? [...pgInvs] : [...db.invoices];
+  const companyId = Number((req as any).auth?.companyId);
+  if (!companyId) return res.status(403).json({ error: 'Contexte entreprise manquant' });
 
-  if (status && status !== 'TOUTES') {
-    list = list.filter(i => i.status === status);
-  }
+  try {
+    const pgInvs = await pgService.getInvoices(companyId);
+    let list: any[] = [...pgInvs];
 
-  if (clientId) {
-    list = list.filter(i => String(i.clientId) === String(clientId));
-  }
-
-  if (search && typeof search === 'string') {
-    const q = search.toLowerCase();
-    list = list.filter(i => 
-      i.invoiceNumber.toLowerCase().includes(q) ||
-      i.clientName.toLowerCase().includes(q) ||
-      (i.clientNIU && i.clientNIU.toLowerCase().includes(q))
-    );
-  }
-
-  res.json({
-    invoices: list,
-    totalCount: list.length,
-    summary: {
-      totalHT: list.reduce((s, i) => s + i.totalHT, 0),
-      totalTTC: list.reduce((s, i) => s + i.totalTTC, 0),
-      totalNetAPayer: list.reduce((s, i) => s + i.netAPayer, 0),
-      paidCount: list.filter(i => i.status === 'PAYEE').length,
-      pendingCount: list.filter(i => i.status === 'EN_ATTENTE').length,
-      overdueCount: list.filter(i => i.status === 'EN_RETARD').length
+    if (status && status !== 'TOUTES') {
+      list = list.filter(i => i.status === status);
     }
-  });
+
+    if (clientId) {
+      list = list.filter(i => String(i.clientId) === String(clientId));
+    }
+
+    if (search && typeof search === 'string') {
+      const q = search.toLowerCase();
+      list = list.filter(i => 
+        (i.invoiceNumber && i.invoiceNumber.toLowerCase().includes(q)) ||
+        (i.clientName && i.clientName.toLowerCase().includes(q)) ||
+        (i.clientNIU && i.clientNIU.toLowerCase().includes(q))
+      );
+    }
+
+    res.json({
+      invoices: list,
+      totalCount: list.length,
+      summary: {
+        totalHT: list.reduce((s, i) => s + (Number(i.totalHT) || 0), 0),
+        totalTTC: list.reduce((s, i) => s + (Number(i.totalTTC) || 0), 0),
+        totalNetAPayer: list.reduce((s, i) => s + (Number(i.netAPayer) || 0), 0),
+        paidCount: list.filter(i => i.status === 'PAYEE').length,
+        pendingCount: list.filter(i => i.status === 'EN_ATTENTE').length,
+        overdueCount: list.filter(i => i.status === 'EN_RETARD').length
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Erreur lors du chargement des factures' });
+  }
 });
 
 // GET /api/invoices/:id
-router.get('/:id', (req: Request, res: Response) => {
-  const invoice = db.invoices.find(i => i.id === req.params.id);
-  if (!invoice) {
-    return res.status(404).json({ error: 'Facture introuvable' });
+router.get('/:id', async (req: Request, res: Response) => {
+  const companyId = Number((req as any).auth?.companyId);
+  if (!companyId) return res.status(403).json({ error: 'Contexte entreprise manquant' });
+
+  try {
+    const invoice = await pgService.getInvoiceById(req.params.id, companyId);
+    if (!invoice) {
+      return res.status(404).json({ error: 'Facture introuvable' });
+    }
+    res.json(invoice);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Erreur lors du chargement de la facture' });
   }
-  res.json(invoice);
 });
 
 // POST /api/invoices/calculate (Tax engine preview)
-router.post('/calculate', (req: Request, res: Response) => {
+router.post('/calculate', async (req: Request, res: Response) => {
   const { items, applyTva = true, applyAcompte = true, clientNIU } = req.body;
+  const companyId = Number((req as any).auth?.companyId);
 
   if (!items || !Array.isArray(items)) {
     return res.status(400).json({ error: 'Liste d\'articles requise' });
   }
+
+  const company = companyId ? await pgService.getCompanyById(companyId) : null;
+  const enableTva = company?.enableTva ?? true;
+  const enableAcompte = company?.enableAcompte ?? true;
+  const compTvaRate = company?.tvaRate ?? 0.1925;
+  const compAcompteRate = company?.acompteRate ?? 0.022;
 
   const totalHT = items.reduce((sum: number, it: any) => {
     const q = Number(it.quantity) || 0;
@@ -70,17 +93,16 @@ router.post('/calculate', (req: Request, res: Response) => {
   }, 0);
 
   // OHADA Cameroon TVA rate: 19.25% (17.5% + 10% CAC)
-  const tvaRate = applyTva && db.company.enableTva ? db.company.tvaRate : 0;
+  const tvaRate = applyTva && enableTva ? compTvaRate : 0;
   const tvaAmount = Math.round(totalHT * tvaRate);
   const totalTTC = totalHT + tvaAmount;
 
   // Acompte AIRS: 2.2% if client has valid NIU, 5.5% if unmatriculated
-  const hasValidNIU = clientNIU && clientNIU.trim().length >= 8;
-  const effectiveAcompteRate = applyAcompte && db.company.enableAcompte 
-    ? (hasValidNIU ? db.company.acompteRate : 0.055) 
+  const hasValidNIU = clientNIU && String(clientNIU).trim().length >= 8;
+  const effectiveAcompteRate = applyAcompte && enableAcompte 
+    ? (hasValidNIU ? compAcompteRate : 0.055) 
     : 0;
   const acompteAmount = Math.round(totalHT * effectiveAcompteRate);
-
   const netAPayer = totalTTC - acompteAmount;
 
   res.json({
@@ -99,7 +121,10 @@ router.post('/calculate', (req: Request, res: Response) => {
 });
 
 // POST /api/invoices
-router.post('/', (req: Request, res: Response) => {
+router.post('/', async (req: Request, res: Response) => {
+  const companyId = Number((req as any).auth?.companyId);
+  if (!companyId) return res.status(403).json({ error: 'Contexte entreprise manquant' });
+
   const {
     clientId,
     clientName,
@@ -119,163 +144,204 @@ router.post('/', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Client et articles requis pour émettre une facture.' });
   }
 
-  // Compute calculated amounts
-  const computedItems: InvoiceItem[] = items.map((it: any, index: number) => {
-    const q = Number(it.quantity) || 1;
-    const p = Number(it.unitPriceHT) || 0;
-    return {
-      id: it.id || `item_${Date.now()}_${index}`,
-      productId: it.productId || `prod_custom_${index}`,
-      description: it.description || 'Article commercial',
-      quantity: q,
-      unitPriceHT: p,
-      totalHT: q * p
-    };
-  });
+  try {
+    const company = await pgService.getCompanyById(companyId);
+    const enableTva = company?.enableTva ?? true;
+    const enableAcompte = company?.enableAcompte ?? true;
+    const compTvaRate = company?.tvaRate ?? 0.1925;
+    const compAcompteRate = company?.acompteRate ?? 0.022;
 
-  const totalHT = computedItems.reduce((sum, it) => sum + it.totalHT, 0);
-  const tvaRate = applyTva && db.company.enableTva ? db.company.tvaRate : 0;
-  const tvaAmount = Math.round(totalHT * tvaRate);
-  const totalTTC = totalHT + tvaAmount;
+    // Compute amounts
+    const computedItems: InvoiceItem[] = items.map((it: any, index: number) => {
+      const q = Number(it.quantity) || 1;
+      const p = Number(it.unitPriceHT) || 0;
+      return {
+        id: it.id || `item_${Date.now()}_${index}`,
+        productId: it.productId || '',
+        description: it.description || 'Article commercial',
+        quantity: q,
+        unitPriceHT: p,
+        totalHT: q * p
+      };
+    });
 
-  const hasValidNIU = clientNIU && clientNIU.trim().length >= 8;
-  const effectiveAcompteRate = applyAcompte && db.company.enableAcompte 
-    ? (hasValidNIU ? db.company.acompteRate : 0.055) 
-    : 0;
-  const acompteAmount = Math.round(totalHT * effectiveAcompteRate);
-  const netAPayer = totalTTC - acompteAmount;
+    const totalHT = computedItems.reduce((sum, it) => sum + it.totalHT, 0);
+    const tvaRate = applyTva && enableTva ? compTvaRate : 0;
+    const tvaAmount = Math.round(totalHT * tvaRate);
+    const totalTTC = totalHT + tvaAmount;
+    const hasValidNIU = clientNIU && String(clientNIU).trim().length >= 8;
+    const effectiveAcompteRate = applyAcompte && enableAcompte
+      ? (hasValidNIU ? compAcompteRate : 0.055)
+      : 0;
+    const acompteAmount = Math.round(totalHT * effectiveAcompteRate);
+    const netAPayer = totalTTC - acompteAmount;
+    const today = new Date().toISOString().split('T')[0];
+    const dueDateFinal = dueDate || new Date(Date.now() + 15 * 86400000).toISOString().split('T')[0];
 
-  const seq = db.invoices.length + 900;
-  const invoiceNumber = `FACT-2026-${seq.toString().padStart(4, '0')}`;
+    // ================================================================
+    // TRANSACTION ACID : Toutes les opérations ou aucune (OHADA §99)
+    // Garantit : numérotation continue, cohérence stock & trésorerie
+    // ================================================================
+    const inserted = await db.transaction(async (tx) => {
+      // 1. Numérotation atomique : compte les factures de CE tenant dans la transaction
+      const [countRow] = await tx
+        .select({ total: count() })
+        .from(schema.invoices)
+        .where(eq(schema.invoices.companyId, companyId));
+      const seq = (Number(countRow?.total) || 0) + 1;
+      const year = new Date().getFullYear();
+      const invoiceNumber = `FACT-${year}-${seq.toString().padStart(4, '0')}`;
 
-  const newInvoice: Invoice = {
-    id: `inv_${Date.now()}`,
-    invoiceNumber,
-    date: new Date().toISOString().split('T')[0],
-    dueDate: dueDate || new Date(Date.now() + 15 * 86400000).toISOString().split('T')[0],
-    clientId: clientId || `cli_${Date.now()}`,
-    clientName,
-    clientNIU: clientNIU || '',
-    clientPhone: clientPhone || '',
-    clientCity: clientCity || 'Douala',
-    status: status as any,
-    items: computedItems,
-    totalHT,
-    tvaRate,
-    tvaAmount,
-    acompteRate: effectiveAcompteRate,
-    acompteAmount,
-    totalTTC,
-    netAPayer,
-    paymentMethod,
-    notes
-  };
+      // 2. Insérer la facture
+      const [newInvoice] = await tx.insert(schema.invoices).values({
+        companyId,
+        invoiceNumber,
+        date: today,
+        dueDate: dueDateFinal,
+        clientId: clientId ? Number(clientId) : null,
+        clientName,
+        clientNIU: clientNIU || '',
+        clientPhone: clientPhone || '',
+        clientCity: clientCity || company?.city || 'Douala',
+        status: status || 'EN_ATTENTE',
+        items: JSON.stringify(computedItems),
+        totalHT: Math.round(totalHT),
+        tvaRate,
+        tvaAmount,
+        acompteRate: effectiveAcompteRate,
+        acompteAmount,
+        totalTTC,
+        netAPayer,
+        paymentMethod,
+        notes: notes || null
+      }).returning();
 
-  // 1. Decrement stock for invoiced items
-  computedItems.forEach(it => {
-    const p = db.products.find(prod => prod.id === it.productId);
-    if (p) {
-      p.stockCurrent = Math.max(0, p.stockCurrent - it.quantity);
-      // Log stock movement
-      db.stockMovements.unshift({
-        id: `mvt_${Date.now()}_${it.productId}`,
-        referenceDoc: invoiceNumber,
-        date: newInvoice.date,
-        type: 'SORTIE',
-        productId: p.id,
-        productName: p.name,
-        quantity: it.quantity,
-        unitCost: p.cmup,
-        totalCost: it.quantity * p.cmup,
-        newCmup: p.cmup,
-        reason: `Vente facture ${invoiceNumber}`,
-        performedBy: db.user.name
-      });
-    }
-  });
+      // 3. Décrémenter les stocks et enregistrer les sorties pour chaque article
+      const currentProducts = await tx
+        .select()
+        .from(schema.products)
+        .where(eq(schema.products.companyId, companyId));
 
-  // 2. Update client statistics
-  let client = db.clients.find(c => c.id === clientId);
-  if (!client && clientName) {
-    client = {
-      id: newInvoice.clientId,
-      name: clientName,
-      company: clientName,
-      niu: clientNIU || '',
-      email: '',
-      phone: clientPhone || '',
-      city: clientCity || 'Douala',
-      segment: 'REGULIER',
-      totalSpent: 0,
-      outstandingBalance: 0,
-      invoicesCount: 0,
-      lastOrderDate: newInvoice.date,
-      iaRecommendation: 'Nouveau client à fidéliser avec offres packagées.'
-    };
-    db.clients.unshift(client);
+      for (const it of computedItems) {
+        const p = currentProducts.find(
+          prod => String(prod.id) === String(it.productId) || prod.reference === it.productId
+        );
+        if (p) {
+          const newStock = Math.max(0, p.stockCurrent - it.quantity);
+
+          // Mise à jour atomique du stock dans la même transaction
+          await tx.update(schema.products)
+            .set({ stockCurrent: newStock })
+            .where(and(eq(schema.products.id, p.id), eq(schema.products.companyId, companyId)));
+
+          // Enregistrement du bon de sortie de stock
+          await tx.insert(schema.stockMovements).values({
+            companyId,
+            referenceDoc: invoiceNumber,
+            date: today,
+            type: 'SORTIE',
+            productId: p.id,
+            productName: p.name,
+            quantity: it.quantity,
+            unitCost: p.cmup,
+            totalCost: Math.round(it.quantity * p.cmup),
+            newCmup: p.cmup,
+            reason: `Vente facture ${invoiceNumber}`,
+            performedBy: (req as any).auth?.email || 'GestCam'
+          });
+        }
+      }
+
+      // 4. Si payée immédiatement, enregistrer l'encaissement en trésorerie
+      if (status === 'PAYEE') {
+        const accounts = await tx
+          .select()
+          .from(schema.treasuryAccounts)
+          .where(eq(schema.treasuryAccounts.companyId, companyId));
+        const acc = accounts.find(a => a.type === paymentMethod) || accounts[0];
+        if (acc) {
+          await tx.insert(schema.treasuryTransactions).values({
+            companyId,
+            date: today,
+            time: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+            accountId: acc.id,
+            accountName: acc.name,
+            channel: paymentMethod,
+            type: 'ENTREE',
+            category: 'Vente Client',
+            amount: Math.round(netAPayer),
+            description: `Règlement Facture ${invoiceNumber} - ${clientName}`,
+            referenceNumber: invoiceNumber,
+            status: 'COMPLETE'
+          });
+
+          // Mise à jour du solde du compte dans la même transaction
+          await tx.update(schema.treasuryAccounts)
+            .set({
+              balance: acc.balance + Math.round(netAPayer),
+              todayInflow: acc.todayInflow + Math.round(netAPayer)
+            })
+            .where(eq(schema.treasuryAccounts.id, acc.id));
+        }
+      }
+
+      return newInvoice;
+    });
+    // ================================================================
+
+    res.status(201).json({
+      invoice: inserted,
+      message: `Facture ${inserted.invoiceNumber} générée avec succès selon le référentiel OHADA.`
+    });
+  } catch (err: any) {
+    console.error('[POST /api/invoices] Transaction error:', err);
+    res.status(500).json({ error: err?.message || 'Erreur lors de la création de la facture' });
   }
-
-  if (client) {
-    client.totalSpent += totalHT;
-    client.invoicesCount += 1;
-    client.lastOrderDate = newInvoice.date;
-    if (status !== 'PAYEE') {
-      client.outstandingBalance += netAPayer;
-    }
-  }
-
-  // 3. If invoice is marked PAID right away, record in Treasury
-  if (status === 'PAYEE') {
-    db.recordPaymentInTreasury(
-      paymentMethod,
-      netAPayer,
-      `Règlement Facture ${invoiceNumber} - ${clientName}`,
-      invoiceNumber
-    );
-  }
-
-  db.invoices.unshift(newInvoice);
-  pgService.createInvoice(newInvoice).catch(() => {});
-
-  res.status(201).json({
-    invoice: newInvoice,
-    message: `Facture ${invoiceNumber} générée avec succès selon le référentiel OHADA.`
-  });
 });
 
+
 // PATCH /api/invoices/:id/status
-router.patch('/:id/status', (req: Request, res: Response) => {
+router.patch('/:id/status', async (req: Request, res: Response) => {
+  const companyId = Number((req as any).auth?.companyId);
+  if (!companyId) return res.status(403).json({ error: 'Contexte entreprise manquant' });
+
   const { status, paymentMethod } = req.body;
-  const invoice = db.invoices.find(i => i.id === req.params.id);
 
-  if (!invoice) {
-    return res.status(404).json({ error: 'Facture introuvable' });
-  }
-
-  const prevStatus = invoice.status;
-  invoice.status = status;
-  pgService.updateInvoiceStatus(req.params.id, status, paymentMethod).catch(() => {});
-
-  if (status === 'PAYEE' && prevStatus !== 'PAYEE') {
-    // Reduce client outstanding balance
-    const client = db.clients.find(c => c.id === invoice.clientId);
-    if (client) {
-      client.outstandingBalance = Math.max(0, client.outstandingBalance - invoice.netAPayer);
+  try {
+    const invoice = await pgService.getInvoiceById(req.params.id, companyId);
+    if (!invoice) {
+      return res.status(404).json({ error: 'Facture introuvable' });
     }
-    // Record in Treasury
-    const channel = paymentMethod || invoice.paymentMethod || 'ESPECES';
-    db.recordPaymentInTreasury(
-      channel,
-      invoice.netAPayer,
-      `Encaissement Facture ${invoice.invoiceNumber} - ${invoice.clientName}`,
-      invoice.invoiceNumber
-    );
-  }
 
-  res.json({
-    invoice,
-    message: `Statut de la facture ${invoice.invoiceNumber} mis à jour : ${status}`
-  });
+    const prevStatus = invoice.status;
+    const updated = await pgService.updateInvoiceStatus(invoice.id, status, paymentMethod, companyId);
+
+    // If marked paid, record in Treasury
+    if (status === 'PAYEE' && prevStatus !== 'PAYEE') {
+      const accounts = await pgService.getTreasuryAccounts(companyId);
+      const channel = paymentMethod || invoice.paymentMethod || 'ESPECES';
+      const acc = accounts.find(a => a.type === channel) || accounts[0];
+      if (acc) {
+        await pgService.recordTreasuryTransaction({
+          accountId: acc.id,
+          accountName: acc.name,
+          channel,
+          type: 'ENTREE',
+          category: 'Vente Client',
+          amount: invoice.netAPayer,
+          description: `Encaissement Facture ${invoice.invoiceNumber} - ${invoice.clientName}`,
+          referenceNumber: invoice.invoiceNumber
+        }, companyId);
+      }
+    }
+
+    res.json({
+      invoice: updated,
+      message: `Statut de la facture ${invoice.invoiceNumber} mis à jour : ${status}`
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Erreur lors de la mise à jour du statut' });
+  }
 });
 
 export default router;

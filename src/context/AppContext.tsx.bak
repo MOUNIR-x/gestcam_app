@@ -184,15 +184,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let isMounted = true;
     const loadBackend = async () => {
       try {
-        const [compRes, prodRes, invRes, trRes, cliRes, supRes, empRes, poRes] = await Promise.all([
+        const [compRes, prodRes, invRes, trRes] = await Promise.all([
           api.getCompanyProfile().catch(() => null),
-          api.getProducts().catch(() => null),
-          api.getInvoices().catch(() => null),
-          api.getTreasuryOverview().catch(() => null),
-          api.getClients().catch(() => null),
-          api.getSuppliers().catch(() => null),
-          api.getEmployees().catch(() => null),
-          api.getPurchaseOrders().catch(() => null)
+          fetch('/api/stocks/products').then((r) => r.json()).catch(() => null),
+          fetch('/api/invoices').then((r) => r.json()).catch(() => null),
+          fetch('/api/treasury/overview').then((r) => r.json()).catch(() => null)
         ]);
 
         if (!isMounted) return;
@@ -214,18 +210,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         if (trRes?.recentTransactions && Array.isArray(trRes.recentTransactions)) {
           setTreasuryTransactions(trRes.recentTransactions);
-        }
-        if (cliRes?.clients && Array.isArray(cliRes.clients)) {
-          setClients(cliRes.clients);
-        }
-        if (supRes?.suppliers && Array.isArray(supRes.suppliers)) {
-          setSuppliers(supRes.suppliers);
-        }
-        if (empRes?.employees && Array.isArray(empRes.employees)) {
-          setEmployees(empRes.employees);
-        }
-        if (poRes?.purchaseOrders && Array.isArray(poRes.purchaseOrders)) {
-          setPurchaseOrders(poRes.purchaseOrders);
         }
       } catch (e) {
         console.warn('Initial data load:', e);
@@ -448,7 +432,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const addClient = async (c: Omit<Client, 'id' | 'totalSpent' | 'outstandingBalance' | 'invoicesCount'>) => {
+  const addClient = (c: Omit<Client, 'id' | 'totalSpent' | 'outstandingBalance' | 'invoicesCount'>) => {
     const newClient: Client = {
       ...c,
       id: `cli_${Date.now()}`,
@@ -457,20 +441,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       invoicesCount: 0
     };
     setClients((prev) => [newClient, ...prev]);
-    try {
-      const res = await api.createClient(c);
-      if (res?.client) {
-        setClients((prev) => prev.map((cli) =>
-          cli.id === newClient.id ? { ...newClient, ...res.client, id: String(res.client.id) } : cli
-        ));
-      }
-    } catch {
-      console.warn('[addClient] Persistance backend échouée, conservation locale');
-    }
     showToast(`Client "${newClient.name}" créé avec succès`);
   };
 
-  const addSupplier = async (s: Omit<Supplier, 'id' | 'totalPurchased' | 'balanceOwed'>) => {
+  const addSupplier = (s: Omit<Supplier, 'id' | 'totalPurchased' | 'balanceOwed'>) => {
     const newSupplier: Supplier = {
       ...s,
       id: `sup_${Date.now()}`,
@@ -478,39 +452,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       balanceOwed: 0
     };
     setSuppliers((prev) => [newSupplier, ...prev]);
-    try {
-      const res = await api.createSupplier(s);
-      if (res?.supplier) {
-        setSuppliers((prev) => prev.map((sup) =>
-          sup.id === newSupplier.id ? { ...newSupplier, ...res.supplier, id: String(res.supplier.id) } : sup
-        ));
-      }
-    } catch {
-      console.warn('[addSupplier] Persistance backend échouée, conservation locale');
-    }
     showToast(`Fournisseur "${newSupplier.name}" enregistré`);
   };
 
-  const addPurchaseOrder = async (po: Omit<PurchaseOrder, 'id' | 'orderNumber'>) => {
-    const count = purchaseOrders.length + 1;
-    const year = new Date().getFullYear();
-    const orderNumber = `BC-${year}-${count.toString().padStart(4, '0')}`;
+  const addPurchaseOrder = (po: Omit<PurchaseOrder, 'id' | 'orderNumber'>) => {
+    const count = purchaseOrders.length + 315;
+    const orderNumber = `BC-2026-${count.toString().padStart(4, '0')}`;
     const newPO: PurchaseOrder = {
       ...po,
       id: `po_${Date.now()}`,
       orderNumber
     };
     setPurchaseOrders((prev) => [newPO, ...prev]);
-    try {
-      const res = await api.createPurchaseOrder({ ...po, orderNumber });
-      if (res?.purchaseOrder) {
-        setPurchaseOrders((prev) => prev.map((p) =>
-          p.id === newPO.id ? { ...newPO, ...res.purchaseOrder, id: String(res.purchaseOrder.id) } : p
-        ));
-      }
-    } catch {
-      console.warn('[addPurchaseOrder] Persistance backend échouée, conservation locale');
-    }
     showToast(`Bon de commande ${orderNumber} généré`);
   };
 
@@ -588,15 +541,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const updateAttendance = async (id: string, attendance: Employee['attendance']) => {
+  const updateAttendance = (id: string, attendance: Employee['attendance']) => {
     setEmployees((prev) =>
       prev.map((e) => (e.id === id ? { ...e, attendance } : e))
     );
-    try {
-      await api.updateAttendance(id, attendance as string);
-    } catch {
-      console.warn('[updateAttendance] Persistance backend échouée, conservation locale');
-    }
     showToast('Présence collaborateur mise à jour');
   };
 

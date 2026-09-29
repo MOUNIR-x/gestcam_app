@@ -1,24 +1,47 @@
 import { db } from '../../src/db/index.ts';
 import * as schema from '../../src/db/schema.ts';
-import { eq, desc } from 'drizzle-orm';
-// NOTE: removed in-memory fallback to force PostgreSQL persistence.
+import { eq, desc, and, or } from 'drizzle-orm';
+import crypto from 'crypto';
 
 const toNumber = (value: unknown, fallback = 0) => {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
 };
 
-// Local in-memory fallback lists used only when SQL operations are not available for specific features.
-const localFallback: any = {
-  fraudAlerts: [],
-  mobileMoneyPayments: []
+const hashPassword = async (password: string) => {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = await new Promise<Buffer>((resolve, reject) =>
+    crypto.scrypt(password, salt, 64, (error, key) => error ? reject(error) : resolve(key))
+  );
+  return `scrypt$${salt}$${derived.toString('hex')}`;
+};
+
+const verifyPassword = async (storedHash: string | null | undefined, password: string) => {
+  if (!storedHash) return false;
+  const [algorithm, salt, expected] = storedHash.split('$');
+  if (algorithm !== 'scrypt' || !salt || !expected) return false;
+  const derived = await new Promise<Buffer>((resolve, reject) =>
+    crypto.scrypt(password, salt, 64, (error, key) => error ? reject(error) : resolve(key))
+  );
+  const expectedBuffer = Buffer.from(expected, 'hex');
+  return expectedBuffer.length === derived.length && crypto.timingSafeEqual(expectedBuffer, derived);
 };
 
 export const pgService = {
-  async getUser() {
+  hashPassword,
+  verifyPassword,
+
+  // ==========================================
+  // USERS & TENANT COMPANIES
+  // ==========================================
+  async getUser(uid?: string) {
     try {
-      const rows = await db.select().from(schema.users).limit(1);
-      if (rows && rows.length > 0) return rows[0];
+      if (!uid) {
+        console.warn('[Postgres] getUser called without uid — returning null');
+        return null;
+      }
+      const rows = await db.select().from(schema.users).where(eq(schema.users.uid, String(uid))).limit(1);
+      return rows.length > 0 ? rows[0] : null;
     } catch (e) {
       console.error('[Postgres] getUser error:', (e as any)?.message);
       throw e;
@@ -33,6 +56,7 @@ export const pgService = {
       role: data?.role || 'Gérant PME',
       companyName: data?.companyName || null,
       city: data?.city || null,
+      passwordHash: data?.passwordHash || null,
     };
 
     try {
@@ -88,6 +112,7 @@ export const pgService = {
         role: data?.role || 'Gérant PME',
         companyName: data?.companyName || null,
         city: data?.city || null,
+        passwordHash: data?.passwordHash || null,
       };
       const [inserted] = await db.insert(schema.users).values(payload).returning();
       if (inserted) return inserted;
@@ -98,50 +123,19 @@ export const pgService = {
     }
   },
 
-  async getCompany() {
+  async getCompany(companyId?: number, userId?: number) {
     try {
-      const rows = await db.select().from(schema.companies).limit(1);
-      if (rows && rows.length > 0) return rows[0];
+      if (companyId) {
+        const rows = await db.select().from(schema.companies).where(eq(schema.companies.id, Number(companyId))).limit(1);
+        return rows.length > 0 ? rows[0] : null;
+      }
+      if (userId) {
+        const rows = await db.select().from(schema.companies).where(eq(schema.companies.userId, Number(userId))).limit(1);
+        return rows.length > 0 ? rows[0] : null;
+      }
+      return null;
     } catch (e) {
       console.error('[Postgres] getCompany error:', (e as any)?.message);
-      throw e;
-    }
-  },
-
-  async upsertCompany(data: any) {
-    const payload = {
-      name: data?.name || 'Nouvelle Entreprise',
-      commercialName: data?.commercialName || data?.name || 'Nouvelle Entreprise',
-      niu: data?.niu || null,
-      rccm: data?.rccm || null,
-      cdi: data?.cdi || null,
-      regime: data?.regime || 'REEL',
-      address: data?.address || null,
-      city: data?.city || 'Douala',
-      phone: data?.phone || null,
-      email: data?.email || null,
-      website: data?.website || null,
-      tvaRate: toNumber(data?.tvaRate ?? 0.1925, 0.1925),
-      acompteRate: toNumber(data?.acompteRate ?? 0.022, 0.022),
-      enableTva: Boolean(data?.enableTva ?? true),
-      enableAcompte: Boolean(data?.enableAcompte ?? true),
-      stockLowAlertThreshold: toNumber(data?.stockLowAlertThreshold ?? 15, 15),
-    };
-
-    try {
-      const existing = await db.select().from(schema.companies).limit(1);
-      if (existing.length > 0) {
-        const [updated] = await db.update(schema.companies)
-          .set(payload)
-          .where(eq(schema.companies.id, existing[0].id))
-          .returning();
-        if (updated) return updated;
-      }
-
-      const [inserted] = await db.insert(schema.companies).values(payload).returning();
-      if (inserted) return inserted;
-    } catch (e) {
-      console.error('[Postgres] Failed to upsert company:', (e as any)?.message);
       throw e;
     }
   },
@@ -168,8 +162,7 @@ export const pgService = {
         stockLowAlertThreshold: toNumber(data?.stockLowAlertThreshold, 15),
       };
       const [inserted] = await db.insert(schema.companies).values(payload).returning();
-      if (inserted) return inserted;
-      return null;
+      return inserted || null;
     } catch (e) {
       console.error('[Postgres] createCompanyForUser error:', (e as any)?.message);
       throw e;
@@ -208,9 +201,13 @@ export const pgService = {
     }
   },
 
-  async getProducts() {
+  // ==========================================
+  // PRODUCTS & STOCKS (MULTI-TENANT)
+  // ==========================================
+  async getProducts(companyId?: number) {
     try {
-      const rows = await db.select().from(schema.products).orderBy(schema.products.id);
+      if (!companyId) return [];
+      const rows = await db.select().from(schema.products).where(eq(schema.products.companyId, companyId)).orderBy(schema.products.id);
       return rows ?? [];
     } catch (e) {
       console.error('[Postgres] getProducts error:', (e as any)?.message);
@@ -218,9 +215,10 @@ export const pgService = {
     }
   },
 
-  async addProduct(p: any) {
+  async addProduct(p: any, companyId: number) {
     try {
       const [inserted] = await db.insert(schema.products).values({
+        companyId,
         reference: p.reference || `REF-${Date.now()}`,
         name: p.name,
         category: p.category || 'Général',
@@ -230,7 +228,8 @@ export const pgService = {
         cmup: Math.round(toNumber(p.cmup, p.purchasePrice || 0)),
         stockCurrent: Math.round(toNumber(p.stockCurrent, 0)),
         stockMin: Math.round(toNumber(p.stockMin, 10)),
-        marginPercent: toNumber(p.marginPercent, 0)
+        marginPercent: toNumber(p.marginPercent, 0),
+        supplierId: p.supplierId ? Number(p.supplierId) : null
       }).returning();
       if (inserted) return inserted;
     } catch (e) {
@@ -239,41 +238,48 @@ export const pgService = {
     }
   },
 
-  async updateProductStock(productId: string, stockCurrent: number, cmup: number, purchasePrice: number, marginPercent: number) {
+  async updateProductStock(productId: string | number, stockCurrent: number, cmup: number, purchasePrice: number, marginPercent: number, companyId?: number) {
     const numericId = Number(productId);
-    if (!Number.isNaN(numericId)) {
-      try {
-        const [updated] = await db.update(schema.products)
-          .set({
-            stockCurrent: Math.round(toNumber(stockCurrent, 0)),
-            cmup: Math.round(toNumber(cmup, 0)),
-            purchasePrice: Math.round(toNumber(purchasePrice, 0)),
-            marginPercent: toNumber(marginPercent, 0),
-          })
-          .where(eq(schema.products.id, numericId))
-          .returning();
-        if (updated) return updated;
-      } catch (e) {
-        console.warn('[Postgres] Failed to update product stock:', (e as any)?.message);
-      }
-    }
+    if (Number.isNaN(numericId)) throw new Error('Product ID not numeric; update aborted');
 
-      // If product ID is not numeric we cannot update SQL
-      throw new Error('Product ID not numeric; update aborted');
+    try {
+      const condition = companyId
+        ? and(eq(schema.products.id, numericId), eq(schema.products.companyId, companyId))
+        : eq(schema.products.id, numericId);
+
+      const [updated] = await db.update(schema.products)
+        .set({
+          stockCurrent: Math.round(toNumber(stockCurrent, 0)),
+          cmup: Math.round(toNumber(cmup, 0)),
+          purchasePrice: Math.round(toNumber(purchasePrice, 0)),
+          marginPercent: toNumber(marginPercent, 0),
+        })
+        .where(condition)
+        .returning();
+      return updated || null;
+    } catch (e) {
+      console.error('[Postgres] Failed to update product stock:', (e as any)?.message);
+      throw e;
+    }
   },
 
-  async getStockMovements() {
+  async getStockMovements(companyId?: number) {
     try {
-      const rows = await db.select().from(schema.stockMovements).orderBy(desc(schema.stockMovements.id));
+      if (!companyId) return [];
+      const rows = await db.select().from(schema.stockMovements)
+        .where(eq(schema.stockMovements.companyId, companyId))
+        .orderBy(desc(schema.stockMovements.id));
       return rows ?? [];
     } catch (e) {
-      console.warn('[Postgres] Failed to load stock movements:', (e as any)?.message);
+      console.error('[Postgres] Failed to load stock movements:', (e as any)?.message);
       throw e;
+    }
   },
 
-  async addStockMovement(mvt: any) {
+  async addStockMovement(mvt: any, companyId: number) {
     try {
       const [inserted] = await db.insert(schema.stockMovements).values({
+        companyId,
         referenceDoc: mvt.referenceDoc || `MVT-${Date.now()}`,
         date: mvt.date || new Date().toISOString().split('T')[0],
         type: mvt.type || 'ENTREE',
@@ -286,27 +292,32 @@ export const pgService = {
         reason: mvt.reason || '',
         performedBy: mvt.performedBy || 'GestCam'
       }).returning();
-      if (inserted) return inserted;
+      return inserted || null;
     } catch (e) {
       console.error('[Postgres] Failed to insert stock movement:', (e as any)?.message);
       throw e;
     }
   },
 
-  async getInventoryRecords() {
+  async getInventoryRecords(companyId?: number) {
     try {
-      const rows = await db.select().from(schema.stockMovements).orderBy(desc(schema.stockMovements.id));
+      if (!companyId) return [];
+      const rows = await db.select().from(schema.inventoryRecords)
+        .where(eq(schema.inventoryRecords.companyId, companyId))
+        .orderBy(desc(schema.inventoryRecords.id));
       return rows ?? [];
     } catch (e) {
-        console.error('[Postgres] Failed to load inventory records:', (e as any)?.message);
+      console.error('[Postgres] Failed to load inventory records:', (e as any)?.message);
       throw e;
     }
   },
 
-  async recordInventoryReconciliation(data: any) {
-    const productId = String(data.productId || '');
-    const products = await this.getProducts();
-    const product = products.find((p: any) => String(p.id) === String(productId));
+  async recordInventoryReconciliation(data: any, companyId: number) {
+    const productId = Number(data.productId);
+    const [product] = await db.select().from(schema.products)
+      .where(and(eq(schema.products.id, productId), eq(schema.products.companyId, companyId)))
+      .limit(1);
+
     if (!product) return null;
 
     const physicalStock = toNumber(data.physicalStock, product.stockCurrent);
@@ -319,43 +330,57 @@ export const pgService = {
           ? 'CONFORME'
           : 'ECART_MINEUR';
 
-    const record = {
-      id: `inv_rec_${Date.now()}`,
-      date: new Date().toISOString().split('T')[0],
-      productId,
-      productName: product.name,
-      theoreticalStock: product.stockCurrent,
-      physicalStock,
-      variance,
-      varianceValueFCFA,
-      status,
-      notes: data.notes || 'Réconciliation du stock'
-    };
-
     try {
-      const [inserted] = await db.insert(schema.stockMovements).values({
-        reference_doc: record.id,
-        date: record.date,
-        type: 'AJUSTEMENT',
-        product_id: Number(productId) || null,
-        product_name: record.productName,
-        quantity: record.variance,
-        unit_cost: product.cmup || 0,
-        total_cost: Math.round(record.variance * (product.cmup || 0)),
-        new_cmup: product.cmup || 0,
-        reason: record.notes,
-        performed_by: 'system_inventory_reconciliation'
+      const [insertedRecord] = await db.insert(schema.inventoryRecords).values({
+        companyId,
+        date: data.date || new Date().toISOString().split('T')[0],
+        productId: product.id,
+        productName: product.name,
+        theoreticalStock: product.stockCurrent,
+        physicalStock,
+        variance,
+        varianceValueFCFA: Math.round(varianceValueFCFA),
+        status,
+        notes: data.notes || (variance === 0 ? 'Conforme au stock théorique' : `Écart constaté de ${variance} unités`)
       }).returning();
-      return record;
+
+      // Also log the adjustment movement in stockMovements
+      await db.insert(schema.stockMovements).values({
+        companyId,
+        referenceDoc: `INV-${insertedRecord.id}`,
+        date: insertedRecord.date,
+        type: 'AJUSTEMENT',
+        productId: product.id,
+        productName: product.name,
+        quantity: variance,
+        unitCost: product.cmup || 0,
+        totalCost: Math.round(variance * (product.cmup || 0)),
+        newCmup: product.cmup || 0,
+        reason: insertedRecord.notes,
+        performedBy: 'system_inventory_reconciliation'
+      });
+
+      // Update current stock to reflect physical count
+      await db.update(schema.products)
+        .set({ stockCurrent: physicalStock })
+        .where(eq(schema.products.id, product.id));
+
+      return insertedRecord;
     } catch (e) {
       console.error('[Postgres] Failed to record inventory reconciliation:', (e as any)?.message);
       throw e;
     }
   },
 
-  async getInvoices() {
+  // ==========================================
+  // INVOICES (MULTI-TENANT)
+  // ==========================================
+  async getInvoices(companyId?: number) {
     try {
-      const rows = await db.select().from(schema.invoices).orderBy(desc(schema.invoices.id));
+      if (!companyId) return [];
+      const rows = await db.select().from(schema.invoices)
+        .where(eq(schema.invoices.companyId, companyId))
+        .orderBy(desc(schema.invoices.id));
       return rows ?? [];
     } catch (e) {
       console.error('[Postgres] getInvoices error:', (e as any)?.message);
@@ -363,12 +388,22 @@ export const pgService = {
     }
   },
 
-  async getInvoiceById(id: string) {
+  async getInvoiceById(id: string | number, companyId?: number) {
     try {
-      const rows = await db.select().from(schema.invoices).where(eq(schema.invoices.invoiceNumber, id)).limit(1);
+      const numericId = Number(id);
+      if (!Number.isNaN(numericId)) {
+        const condition = companyId
+          ? and(eq(schema.invoices.id, numericId), eq(schema.invoices.companyId, companyId))
+          : eq(schema.invoices.id, numericId);
+        const rowsById = await db.select().from(schema.invoices).where(condition).limit(1);
+        if (rowsById.length > 0) return rowsById[0];
+      }
+
+      const strCondition = companyId
+        ? and(eq(schema.invoices.invoiceNumber, String(id)), eq(schema.invoices.companyId, companyId))
+        : eq(schema.invoices.invoiceNumber, String(id));
+      const rows = await db.select().from(schema.invoices).where(strCondition).limit(1);
       if (rows.length > 0) return rows[0];
-      const rowsById = await db.select().from(schema.invoices).where(eq(schema.invoices.id, Number(id))).limit(1);
-      if (rowsById.length > 0) return rowsById[0];
     } catch (e) {
       console.error('[Postgres] Failed to load invoice by id:', (e as any)?.message);
       throw e;
@@ -376,12 +411,14 @@ export const pgService = {
     return null;
   },
 
-  async createInvoice(inv: any) {
+  async createInvoice(inv: any, companyId: number) {
     try {
       const [inserted] = await db.insert(schema.invoices).values({
+        companyId,
         invoiceNumber: inv.invoiceNumber,
         date: inv.date,
         dueDate: inv.dueDate,
+        clientId: inv.clientId ? Number(inv.clientId) : null,
         clientName: inv.clientName,
         clientNIU: inv.clientNIU || null,
         clientPhone: inv.clientPhone || null,
@@ -397,32 +434,57 @@ export const pgService = {
         paymentMethod: inv.paymentMethod || null,
         notes: inv.notes || null
       }).returning();
-      if (inserted) return inserted;
+
+      if (inserted && inv.items && Array.isArray(inv.items)) {
+        for (const item of inv.items) {
+          await db.insert(schema.invoiceItems).values({
+            companyId,
+            invoiceId: inserted.id,
+            productId: item.productId ? Number(item.productId) : null,
+            description: item.description || 'Article',
+            quantity: Math.round(toNumber(item.quantity, 1)),
+            unitPriceHT: Math.round(toNumber(item.unitPriceHT, 0)),
+            totalHT: Math.round(toNumber(item.totalHT, 0))
+          });
+        }
+      }
+
+      return inserted;
     } catch (e) {
       console.error('[Postgres] Failed to insert invoice in SQL:', (e as any)?.message);
       throw e;
     }
   },
 
-  async updateInvoiceStatus(id: string | number, status: string, paymentMethod?: string) {
+  async updateInvoiceStatus(id: string | number, status: string, paymentMethod?: string, companyId?: number) {
     const numericId = Number(id);
-    if (!Number.isNaN(numericId)) {
-      try {
-        await db.update(schema.invoices)
-          .set({ status, paymentMethod: paymentMethod || undefined })
-          .where(eq(schema.invoices.id, numericId));
-      } catch (e) {
-        console.error('[Postgres] Failed to update invoice in SQL:', (e as any)?.message);
-        throw e;
-      }
+    if (Number.isNaN(numericId)) throw new Error('Invoice ID not numeric; update aborted');
+
+    try {
+      const condition = companyId
+        ? and(eq(schema.invoices.id, numericId), eq(schema.invoices.companyId, companyId))
+        : eq(schema.invoices.id, numericId);
+
+      const [updated] = await db.update(schema.invoices)
+        .set({ status, paymentMethod: paymentMethod || undefined })
+        .where(condition)
+        .returning();
+      return updated || null;
+    } catch (e) {
+      console.error('[Postgres] Failed to update invoice in SQL:', (e as any)?.message);
+      throw e;
     }
-    // If id is not numeric we cannot update SQL
-    throw new Error('Invoice ID not numeric; update aborted');
   },
 
-  async getClients() {
+  // ==========================================
+  // CLIENTS (MULTI-TENANT)
+  // ==========================================
+  async getClients(companyId?: number) {
     try {
-      const rows = await db.select().from(schema.clients);
+      if (!companyId) return [];
+      const rows = await db.select().from(schema.clients)
+        .where(eq(schema.clients.companyId, companyId))
+        .orderBy(schema.clients.name);
       return rows ?? [];
     } catch (e) {
       console.error('[Postgres] getClients error:', (e as any)?.message);
@@ -430,12 +492,14 @@ export const pgService = {
     }
   },
 
-  async createClient(client: any) {
+  async createClient(client: any, companyId: number) {
     try {
       const [inserted] = await db.insert(schema.clients).values({
+        companyId,
         name: client.name,
         company: client.company || client.name,
         niu: client.niu || null,
+        rccm: client.rccm || null,
         phone: client.phone || '',
         email: client.email || null,
         city: client.city || 'Douala',
@@ -443,16 +507,22 @@ export const pgService = {
         outstandingBalance: Math.round(toNumber(client.outstandingBalance, 0)),
         invoicesCount: Math.round(toNumber(client.invoicesCount, 0)),
       }).returning();
-      if (inserted) return inserted;
+      return inserted || null;
     } catch (e) {
       console.error('[Postgres] Failed to insert client in SQL:', (e as any)?.message);
       throw e;
     }
   },
 
-  async getSuppliers() {
+  // ==========================================
+  // SUPPLIERS (MULTI-TENANT)
+  // ==========================================
+  async getSuppliers(companyId?: number) {
     try {
-      const rows = await db.select().from(schema.suppliers);
+      if (!companyId) return [];
+      const rows = await db.select().from(schema.suppliers)
+        .where(eq(schema.suppliers.companyId, companyId))
+        .orderBy(schema.suppliers.name);
       return rows ?? [];
     } catch (e) {
       console.error('[Postgres] getSuppliers error:', (e as any)?.message);
@@ -460,9 +530,62 @@ export const pgService = {
     }
   },
 
-  async getTreasuryAccounts() {
+  async createSupplier(supplier: any, companyId: number) {
     try {
-      const rows = await db.select().from(schema.treasuryAccounts);
+      const [inserted] = await db.insert(schema.suppliers).values({
+        companyId,
+        name: supplier.name,
+        category: supplier.category || 'Général',
+        contactName: supplier.contactName || null,
+        phone: supplier.phone || null,
+        email: supplier.email || null,
+        city: supplier.city || 'Douala',
+        paymentTerms: supplier.paymentTerms || 'Comptant',
+        totalPurchased: Math.round(toNumber(supplier.totalPurchased, 0)),
+        balanceOwed: Math.round(toNumber(supplier.balanceOwed, 0))
+      }).returning();
+      return inserted || null;
+    } catch (e) {
+      console.error('[Postgres] Failed to insert supplier in SQL:', (e as any)?.message);
+      throw e;
+    }
+  },
+
+  // ==========================================
+  // TREASURY (MULTI-TENANT)
+  // ==========================================
+  async getTreasuryAccounts(companyId?: number) {
+    try {
+      if (!companyId) return [];
+      let rows = await db.select().from(schema.treasuryAccounts)
+        .where(eq(schema.treasuryAccounts.companyId, companyId));
+
+      // Auto-initialize standard default accounts if empty for this company
+      if (rows.length === 0) {
+        const defaults = [
+          { name: 'MTN Mobile Money', type: 'MTN_MOMO', accountNumber: '+237 6 77 00 00 00' },
+          { name: 'Orange Money', type: 'ORANGE_MONEY', accountNumber: '+237 6 99 00 00 00' },
+          { name: 'Afriland First Bank', type: 'BANQUE', accountNumber: '10005-00012-34567890123-45' },
+          { name: 'Caisse Principale Espèces', type: 'ESPECES', accountNumber: 'CAISSE-DLA-01' }
+        ];
+
+        for (const def of defaults) {
+          await db.insert(schema.treasuryAccounts).values({
+            companyId,
+            name: def.name,
+            type: def.type,
+            accountNumber: def.accountNumber,
+            balance: 0,
+            todayInflow: 0,
+            todayOutflow: 0,
+            currency: 'FCFA'
+          });
+        }
+
+        rows = await db.select().from(schema.treasuryAccounts)
+          .where(eq(schema.treasuryAccounts.companyId, companyId));
+      }
+
       return rows ?? [];
     } catch (e) {
       console.error('[Postgres] getTreasuryAccounts error:', (e as any)?.message);
@@ -470,9 +593,12 @@ export const pgService = {
     }
   },
 
-  async getTreasuryTransactions() {
+  async getTreasuryTransactions(companyId?: number) {
     try {
-      const rows = await db.select().from(schema.treasuryTransactions).orderBy(desc(schema.treasuryTransactions.id));
+      if (!companyId) return [];
+      const rows = await db.select().from(schema.treasuryTransactions)
+        .where(eq(schema.treasuryTransactions.companyId, companyId))
+        .orderBy(desc(schema.treasuryTransactions.id));
       return rows ?? [];
     } catch (e) {
       console.error('[Postgres] getTreasuryTransactions error:', (e as any)?.message);
@@ -480,40 +606,67 @@ export const pgService = {
     }
   },
 
-  async recordTreasuryTransaction(tx: any) {
+  async recordTreasuryTransaction(tx: any, companyId?: number) {
     try {
+      const targetCompanyId = companyId || Number(tx.companyId);
       const [inserted] = await db.insert(schema.treasuryTransactions).values({
-        date: tx.date,
-        time: tx.time,
-        accountName: tx.accountName,
-        channel: tx.channel,
-        type: tx.type,
-        category: tx.category,
+        companyId: targetCompanyId || null,
+        date: tx.date || new Date().toISOString().split('T')[0],
+        time: tx.time || new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+        accountId: tx.accountId ? Number(tx.accountId) : null,
+        accountName: tx.accountName || 'Compte Trésorerie',
+        channel: tx.channel || 'ESPECES',
+        type: tx.type || 'ENTREE',
+        category: tx.category || 'Vente Client',
         amount: Math.round(toNumber(tx.amount, 0)),
-        description: tx.description,
-        referenceNumber: tx.referenceNumber,
+        description: tx.description || '',
+        referenceNumber: tx.referenceNumber || `REF-${Date.now()}`,
         status: tx.status || 'COMPLETE'
       }).returning();
-      if (inserted) return inserted;
+
+      // Update the account balance
+      if (tx.accountId && targetCompanyId) {
+        const delta = tx.type === 'ENTREE' ? Math.round(toNumber(tx.amount, 0)) : -Math.round(toNumber(tx.amount, 0));
+        const [acc] = await db.select().from(schema.treasuryAccounts)
+          .where(and(eq(schema.treasuryAccounts.id, Number(tx.accountId)), eq(schema.treasuryAccounts.companyId, targetCompanyId)));
+        if (acc) {
+          await db.update(schema.treasuryAccounts)
+            .set({
+              balance: acc.balance + delta,
+              todayInflow: tx.type === 'ENTREE' ? acc.todayInflow + Math.round(toNumber(tx.amount, 0)) : acc.todayInflow,
+              todayOutflow: tx.type === 'SORTIE' ? acc.todayOutflow + Math.round(toNumber(tx.amount, 0)) : acc.todayOutflow
+            })
+            .where(eq(schema.treasuryAccounts.id, acc.id));
+        }
+      }
+
+      return inserted || null;
     } catch (e) {
       console.error('[Postgres] Failed to insert treasury tx in SQL:', (e as any)?.message);
       throw e;
     }
   },
 
-  async getFraudAlerts() {
+  // ==========================================
+  // FRAUD ALERTS (MULTI-TENANT)
+  // ==========================================
+  async getFraudAlerts(companyId?: number) {
     try {
-      const rows = await db.select().from(schema.fraudAlerts).orderBy(desc(schema.fraudAlerts.id));
+      if (!companyId) return [];
+      const rows = await db.select().from(schema.fraudAlerts)
+        .where(eq(schema.fraudAlerts.companyId, companyId))
+        .orderBy(desc(schema.fraudAlerts.id));
       return rows ?? [];
     } catch (e) {
       console.error('[Postgres] getFraudAlerts error:', (e as any)?.message);
-      return localFallback.fraudAlerts;
+      throw e;
     }
   },
 
-  async createFraudAlert(alert: any) {
+  async createFraudAlert(alert: any, companyId: number) {
     try {
       const [inserted] = await db.insert(schema.fraudAlerts).values({
+        companyId,
         type: alert.type || 'GENERIC',
         severity: alert.severity || 'MOYEN',
         title: alert.title || 'Alerte de sécurité',
@@ -524,58 +677,191 @@ export const pgService = {
         timestamp: alert.timestamp || new Date().toISOString(),
         resolved: false
       }).returning();
-      if (inserted) return inserted;
+      return inserted || null;
     } catch (e) {
       console.error('[Postgres] Failed to insert fraud alert:', (e as any)?.message);
-      const alertItem = { ...alert, id: `alert_${Date.now()}` };
-      localFallback.fraudAlerts.unshift(alertItem);
-      return alertItem;
+      throw e;
     }
   },
 
-  async resolveFraudAlert(id: string) {
+  async resolveFraudAlert(id: string | number, companyId?: number) {
     try {
       const rowId = Number(id);
       if (!Number.isNaN(rowId)) {
+        const condition = companyId
+          ? and(eq(schema.fraudAlerts.id, rowId), eq(schema.fraudAlerts.companyId, companyId))
+          : eq(schema.fraudAlerts.id, rowId);
+
         const [updated] = await db.update(schema.fraudAlerts)
           .set({ resolved: true })
-          .where(eq(schema.fraudAlerts.id, rowId))
+          .where(condition)
           .returning();
-        if (updated) return updated;
+        return updated || null;
       }
     } catch (e) {
       console.error('[Postgres] Failed to resolve alert:', (e as any)?.message);
-      // fallback to local in-memory
-    }
-
-    const idx = localFallback.fraudAlerts.findIndex((a: any) => a.id === id);
-    if (idx >= 0) {
-      const [removed] = localFallback.fraudAlerts.splice(idx, 1);
-      return removed;
+      throw e;
     }
     return null;
   },
 
-  async getEmployees() {
-    return [];
+  // ==========================================
+  // EMPLOYEES & RH (MULTI-TENANT)
+  // ==========================================
+  async getEmployees(companyId?: number) {
+    try {
+      if (!companyId) return [];
+      const rows = await db.select().from(schema.employees)
+        .where(eq(schema.employees.companyId, companyId))
+        .orderBy(schema.employees.lastName);
+      return rows ?? [];
+    } catch (e) {
+      console.error('[Postgres] getEmployees error:', (e as any)?.message);
+      throw e;
+    }
   },
 
-  async getMobileMoneyPayments() {
-    return localFallback.mobileMoneyPayments;
+  async createEmployee(data: any, companyId: number) {
+    try {
+      const [inserted] = await db.insert(schema.employees).values({
+        companyId,
+        matricule: data.matricule || `EMP-${Date.now().toString().slice(-4)}`,
+        firstName: data.firstName || '',
+        lastName: data.lastName || '',
+        role: data.role || 'Employé',
+        department: data.department || 'Opérations',
+        phone: data.phone || '',
+        hireDate: data.hireDate || new Date().toISOString().split('T')[0],
+        baseSalary: Math.round(toNumber(data.baseSalary, 0)),
+        attendance: data.attendance || 'PRESENT',
+        cnpsNumber: data.cnpsNumber || null,
+        primeTransport: Math.round(toNumber(data.primeTransport, 0)),
+        primeRendement: Math.round(toNumber(data.primeRendement, 0)),
+        deductionCNPS: Math.round(toNumber(data.deductionCNPS, 0)),
+        deductionIRPP: Math.round(toNumber(data.deductionIRPP, 0)),
+        deductionCAC: Math.round(toNumber(data.deductionCAC, 0)),
+        netAPayer: Math.round(toNumber(data.netAPayer, 0))
+      }).returning();
+      return inserted || null;
+    } catch (e) {
+      console.error('[Postgres] createEmployee error:', (e as any)?.message);
+      throw e;
+    }
   },
 
-  async createMobileMoneyPayment(payment: any) {
-    const record = { ...payment, createdAt: new Date().toISOString() };
-    localFallback.mobileMoneyPayments.unshift(record);
-    return record;
+  async updateEmployeeAttendance(id: string | number, attendance: string, companyId?: number) {
+    try {
+      const numericId = Number(id);
+      if (Number.isNaN(numericId)) return null;
+
+      const condition = companyId
+        ? and(eq(schema.employees.id, numericId), eq(schema.employees.companyId, companyId))
+        : eq(schema.employees.id, numericId);
+
+      const [updated] = await db.update(schema.employees)
+        .set({ attendance })
+        .where(condition)
+        .returning();
+      return updated || null;
+    } catch (e) {
+      console.error('[Postgres] updateEmployeeAttendance error:', (e as any)?.message);
+      throw e;
+    }
+  },
+
+  // ==========================================
+  // PURCHASE ORDERS (MULTI-TENANT)
+  // ==========================================
+  async getPurchaseOrders(companyId?: number) {
+    try {
+      if (!companyId) return [];
+      const rows = await db.select().from(schema.purchaseOrders)
+        .where(eq(schema.purchaseOrders.companyId, companyId))
+        .orderBy(desc(schema.purchaseOrders.id));
+      return rows ?? [];
+    } catch (e) {
+      console.error('[Postgres] getPurchaseOrders error:', (e as any)?.message);
+      throw e;
+    }
+  },
+
+  async createPurchaseOrder(data: any, companyId: number) {
+    try {
+      const [inserted] = await db.insert(schema.purchaseOrders).values({
+        companyId,
+        orderNumber: data.orderNumber || `BC-${Date.now().toString().slice(-5)}`,
+        supplierId: data.supplierId ? Number(data.supplierId) : null,
+        supplierName: data.supplierName || 'Fournisseur',
+        date: data.date || new Date().toISOString().split('T')[0],
+        deliveryDate: data.deliveryDate || new Date().toISOString().split('T')[0],
+        itemsCount: Math.round(toNumber(data.itemsCount, 1)),
+        totalAmount: Math.round(toNumber(data.totalAmount, 0)),
+        status: data.status || 'BROUILLON'
+      }).returning();
+      return inserted || null;
+    } catch (e) {
+      console.error('[Postgres] createPurchaseOrder error:', (e as any)?.message);
+      throw e;
+    }
+  },
+
+  // ==========================================
+  // MOBILE MONEY (MULTI-TENANT)
+  // ==========================================
+  async getMobileMoneyPayments(companyId?: number) {
+    try {
+      if (!companyId) return [];
+      const rows = await db.select().from(schema.mobileMoneyPayments)
+        .where(eq(schema.mobileMoneyPayments.companyId, companyId))
+        .orderBy(desc(schema.mobileMoneyPayments.id));
+      return rows ?? [];
+    } catch (e) {
+      console.error('[Postgres] getMobileMoneyPayments error:', (e as any)?.message);
+      throw e;
+    }
+  },
+
+  async createMobileMoneyPayment(payment: any, companyId?: number) {
+    try {
+      const [inserted] = await db.insert(schema.mobileMoneyPayments).values({
+        companyId: companyId || null,
+        transactionId: payment.transactionId || `TX-${Date.now()}`,
+        reference: payment.reference || `REF-${Date.now()}`,
+        operator: payment.operator || 'MTN_MOMO',
+        phoneNumber: payment.phoneNumber || '',
+        amount: Math.round(toNumber(payment.amount, 0)),
+        invoiceId: payment.invoiceId || null,
+        status: payment.status || 'PENDING'
+      }).returning();
+      return inserted || null;
+    } catch (e) {
+      console.error('[Postgres] createMobileMoneyPayment error:', (e as any)?.message);
+      throw e;
+    }
+  },
+
+  async findMobileMoneyPayment(query: string) {
+    try {
+      const rows = await db.select().from(schema.mobileMoneyPayments)
+        .where(or(eq(schema.mobileMoneyPayments.transactionId, query), eq(schema.mobileMoneyPayments.reference, query)))
+        .limit(1);
+      return rows[0] || null;
+    } catch (e) {
+      console.error('[Postgres] findMobileMoneyPayment error:', (e as any)?.message);
+      return null;
+    }
   },
 
   async updateMobileMoneyPayment(transactionId: string, status: string) {
-    const payment = localFallback.mobileMoneyPayments.find((p: any) => p.transactionId === transactionId);
-    if (payment) {
-      payment.status = status as any;
-      payment.confirmedAt = new Date().toISOString();
+    try {
+      const [updated] = await db.update(schema.mobileMoneyPayments)
+        .set({ status, confirmedAt: new Date().toISOString() })
+        .where(eq(schema.mobileMoneyPayments.transactionId, transactionId))
+        .returning();
+      return updated || null;
+    } catch (e) {
+      console.error('[Postgres] updateMobileMoneyPayment error:', (e as any)?.message);
+      throw e;
     }
-    return payment;
   }
 };

@@ -14,7 +14,7 @@ export const AuthPage: React.FC<{ initialMode?: 'login' | 'register' }> = ({ ini
   const [fullName, setFullName] = useState('Mounir Kamdem');
   const [email, setEmail] = useState('mounir.kamdem@baticam-cm.com');
   const [phone, setPhone] = useState('+237 6 77 41 89 22');
-  const [password, setPassword] = useState('••••••••');
+  const [password, setPassword] = useState('');
 
   // Step 2: Business & OHADA Tax
   const [companyName, setCompanyName] = useState('BatiCam Distribution Sarl');
@@ -56,8 +56,35 @@ export const AuthPage: React.FC<{ initialMode?: 'login' | 'register' }> = ({ ini
     })();
   };
 
-  const handleRegisterSubmit = (e: React.FormEvent) => {
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (password.length < 12) {
+      showToast('Le mot de passe doit contenir au moins 12 caractères.');
+      return;
+    }
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ companyName, commercialName: companyName, niu, rccm, regime, city, phone, email, managerName: fullName, password })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error || 'Impossible de créer le compte.');
+        return;
+      }
+      if (data.token) localStorage.setItem('gestcam_token', data.token);
+      if (data.user) updateCurrentUser(data.user);
+      if (data.company) updateCompanySettings(data.company);
+      showToast('Votre compte entreprise a été créé avec succès !');
+      navigate('/dashboard');
+      return;
+    } catch {
+      showToast('Erreur réseau lors de la création du compte.');
+      return;
+    }
+
+    /* istanbul ignore next: legacy local fallback kept for offline previews */
     updateCurrentUser({
       name: fullName,
       email: email,

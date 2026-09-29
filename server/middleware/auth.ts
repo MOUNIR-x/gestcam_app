@@ -1,7 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 
-const SECRET = process.env.JWT_SECRET || 'gestcam_dev_secret_change_me';
+const SECRET = process.env.JWT_SECRET;
+const signingSecret = SECRET || 'development-only-secret';
+
+if (!SECRET && process.env.NODE_ENV === 'production') {
+  throw new Error('JWT_SECRET must be configured in production.');
+}
 
 const base64url = (input: string) =>
   Buffer.from(input).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -9,7 +14,7 @@ const base64url = (input: string) =>
 export function signToken(payload: Record<string, any>, expiresInSeconds = 3600) {
   const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const body = base64url(JSON.stringify({ ...payload, exp: Math.floor(Date.now() / 1000) + expiresInSeconds }));
-  const sig = crypto.createHmac('sha256', SECRET).update(`${header}.${body}`).digest('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const sig = crypto.createHmac('sha256', signingSecret).update(`${header}.${body}`).digest('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
   return `${header}.${body}.${sig}`;
 }
 
@@ -18,8 +23,8 @@ function verifyToken(token: string) {
     const parts = token.split('.');
     if (parts.length !== 3) return null;
     const [header, body, sig] = parts;
-    const expected = crypto.createHmac('sha256', SECRET).update(`${header}.${body}`).digest('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-    if (sig !== expected) return null;
+    const expected = crypto.createHmac('sha256', signingSecret).update(`${header}.${body}`).digest('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+    if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
     const payload = JSON.parse(Buffer.from(body, 'base64').toString('utf8'));
     if (payload.exp && Math.floor(Date.now() / 1000) > payload.exp) return null;
     return payload;

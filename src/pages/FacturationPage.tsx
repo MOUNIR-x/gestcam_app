@@ -127,10 +127,10 @@ export const FacturationPage: React.FC = () => {
     );
   };
 
-  const handleSaveInvoice = (status: InvoiceStatus = 'EN_ATTENTE') => {
+  const handleSaveInvoice = async (status: InvoiceStatus = 'EN_ATTENTE') => {
     if (items.length === 0 || totalHT <= 0) return;
 
-    const newInv = addInvoice({
+    const newInv = await addInvoice({
       date: invoiceDate,
       dueDate,
       clientId: selectedClient.id,

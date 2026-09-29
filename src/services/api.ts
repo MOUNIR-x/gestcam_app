@@ -41,7 +41,7 @@ export interface TaxDeclarationSummary {
 }
 
 class ApiService {
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const token = typeof window !== 'undefined' ? localStorage.getItem('gestcam_token') : null;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -80,6 +80,10 @@ class ApiService {
   }
 
   // Invoices & Tax Engine
+  async getInvoices() {
+    return this.request<{ invoices: any[] }>('/api/invoices');
+  }
+
   async calculateInvoiceTax(data: { items: any[]; applyTva?: boolean; applyAcompte?: boolean; clientNIU?: string }) {
     return this.request<TaxCalculationResult>('/api/invoices/calculate', {
       method: 'POST',
@@ -102,6 +106,10 @@ class ApiService {
   }
 
   // Stocks & Inventory
+  async getProducts() {
+    return this.request<{ products: any[] }>('/api/stocks/products');
+  }
+
   async addProduct(product: any) {
     return this.request<{ product: any; message: string }>('/api/stocks/products', {
       method: 'POST',
@@ -159,6 +167,61 @@ class ApiService {
     return this.request<{ reply: string; source: string; timestamp: string }>('/api/ai/copilot', {
       method: 'POST',
       body: JSON.stringify({ message })
+    });
+  }
+
+  // Clients
+  async getClients() {
+    return this.request<{ clients: any[] }>('/api/clients');
+  }
+
+  async createClient(data: any) {
+    return this.request<{ client: any; message: string }>('/api/clients', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  }
+
+  // Fournisseurs
+  async getSuppliers() {
+    return this.request<{ suppliers: any[] }>('/api/suppliers');
+  }
+
+  async createSupplier(data: any) {
+    return this.request<{ supplier: any; message: string }>('/api/suppliers', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  }
+
+  // Employés
+  async getEmployees() {
+    return this.request<{ employees: any[] }>('/api/employees');
+  }
+
+  async createEmployee(data: any) {
+    return this.request<{ employee: any; message: string }>('/api/employees', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  }
+
+  async updateAttendance(id: string, attendance: string) {
+    return this.request<{ employee: any; message: string }>(`/api/employees/${id}/attendance`, {
+      method: 'PATCH',
+      body: JSON.stringify({ attendance })
+    });
+  }
+
+  // Bons de commande
+  async getPurchaseOrders() {
+    return this.request<{ purchaseOrders: any[] }>('/api/purchase-orders');
+  }
+
+  async createPurchaseOrder(data: any) {
+    return this.request<{ purchaseOrder: any; message: string }>('/api/purchase-orders', {
+      method: 'POST',
+      body: JSON.stringify(data)
     });
   }
 }
